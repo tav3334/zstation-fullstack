@@ -1,0 +1,607 @@
+// Schéma PostgreSQL (Supabase) — reprise 1:1 des tables de l'ancien backend Laravel/MySQL.
+// Les noms de tables et de colonnes sont identiques (snake_case) pour que :
+//   - le JSON renvoyé au frontend garde exactement les mêmes clés ;
+//   - la migration des données MySQL → Postgres soit une simple copie.
+// Les champs de relation sont nommés comme les relations Eloquent sérialisées (snake_case).
+
+generator client {
+  provider      = "prisma-client-js"
+  binaryTargets = ["native", "rhel-openssl-3.0.x"]
+}
+
+datasource db {
+  provider  = "postgresql"
+  url       = env("DATABASE_URL")
+  directUrl = env("DIRECT_URL")
+}
+
+model Organization {
+  id              Int       @id @default(autoincrement())
+  name            String
+  code            String    @unique
+  is_active       Boolean   @default(true)
+  module_gaming   Boolean   @default(true)
+  module_coiffure Boolean   @default(true)
+  module_stock    Boolean   @default(true)
+  address         String?
+  phone           String?
+  ice             String?
+  rc              String?
+  if_number       String?
+  patente         String?
+  tva_rate        Decimal   @default(20) @db.Decimal(5, 2)
+  tva_enabled     Boolean   @default(false)
+  logo_url        String?
+  email           String?
+  created_at      DateTime? @default(now())
+  updated_at      DateTime? @default(now()) @updatedAt
+
+  users                     User[]
+  machines                  Machine[]
+  customers                 Customer[]
+  game_sessions             GameSession[]
+  products                  Product[]
+  product_sales             ProductSale[]
+  payments                  Payment[]
+  cash_registers            CashRegister[]
+  games                     Game[]
+  subscriptions             Subscription[]
+  subscription_invoices     SubscriptionInvoice[]
+  coiffeurs                 Coiffeur[]
+  services                  Service[]
+  service_categories        ServiceCategory[]
+  stock_products            StockProduct[]
+  sales                     Sale[]
+  stock_movements           StockMovement[]
+  customer_credit_movements CustomerCreditMovement[]
+
+  @@map("organizations")
+}
+
+model User {
+  id              Int           @id @default(autoincrement())
+  name            String
+  email           String        @unique
+  password        String
+  role            String        @default("agent")
+  remember_token  String?
+  created_at      DateTime?     @default(now())
+  updated_at      DateTime?     @default(now()) @updatedAt
+  organization_id Int?
+  organization    Organization? @relation(fields: [organization_id], references: [id], onDelete: SetNull)
+
+  payments          Payment[]                @relation("PaymentStaff")
+  product_sales     ProductSale[]            @relation("ProductSaleStaff")
+  sales             Sale[]                   @relation("SaleStaff")
+  cancelled_sales   Sale[]                   @relation("SaleCancelledBy")
+  stock_movements   StockMovement[]
+  credit_movements  CustomerCreditMovement[]
+  opened_registers  CashRegister[]           @relation("RegisterOpenedBy")
+  closed_registers  CashRegister[]           @relation("RegisterClosedBy")
+
+  @@index([organization_id])
+  @@map("users")
+}
+
+// Tokens d'API compatibles Laravel Sanctum ("id|secret", secret stocké en SHA-256) :
+// les tokens existants restent valides après la migration des données.
+model PersonalAccessToken {
+  id             Int       @id @default(autoincrement())
+  tokenable_type String
+  tokenable_id   Int
+  name           String
+  token          String    @unique @db.VarChar(64)
+  abilities      String?
+  last_used_at   DateTime?
+  expires_at     DateTime?
+  created_at     DateTime? @default(now())
+  updated_at     DateTime? @default(now()) @updatedAt
+
+  @@index([tokenable_type, tokenable_id])
+  @@index([expires_at])
+  @@map("personal_access_tokens")
+}
+
+model GameType {
+  id         Int       @id @default(autoincrement())
+  name       String
+  created_at DateTime? @default(now())
+  updated_at DateTime? @default(now()) @updatedAt
+
+  games Game[]
+
+  @@map("game_types")
+}
+
+model PricingMode {
+  id         Int       @id @default(autoincrement())
+  code       String
+  label      String
+  created_at DateTime? @default(now())
+  updated_at DateTime? @default(now()) @updatedAt
+
+  game_pricings GamePricing[]
+  game_sessions GameSession[]
+
+  @@map("pricing_modes")
+}
+
+model Machine {
+  id              Int           @id @default(autoincrement())
+  name            String
+  status          String        @default("available") // available | in_session | maintenance
+  created_at      DateTime?     @default(now())
+  updated_at      DateTime?     @default(now()) @updatedAt
+  organization_id Int?
+  organization    Organization? @relation(fields: [organization_id], references: [id], onDelete: SetNull)
+
+  sessions GameSession[]
+
+  @@index([organization_id])
+  @@map("machines")
+}
+
+model Game {
+  id              Int           @id @default(autoincrement())
+  game_type_id    Int
+  type            GameType      @relation(fields: [game_type_id], references: [id], onDelete: Cascade)
+  name            String
+  active          Boolean       @default(true)
+  created_at      DateTime?     @default(now())
+  updated_at      DateTime?     @default(now()) @updatedAt
+  organization_id Int?
+  organization    Organization? @relation(fields: [organization_id], references: [id], onDelete: SetNull)
+
+  pricings GamePricing[]
+  sessions GameSession[]
+
+  @@index([game_type_id])
+  @@index([organization_id])
+  @@map("games")
+}
+
+model GamePricing {
+  id               Int         @id @default(autoincrement())
+  game_id          Int
+  game             Game        @relation(fields: [game_id], references: [id], onDelete: Cascade)
+  pricing_mode_id  Int
+  pricing_mode     PricingMode @relation(fields: [pricing_mode_id], references: [id], onDelete: Cascade)
+  duration_minutes Int?
+  matches_count    Int?
+  price            Decimal     @db.Decimal(8, 2)
+  description      String?
+  created_at       DateTime?   @default(now())
+  updated_at       DateTime?   @default(now()) @updatedAt
+
+  sessions GameSession[]
+
+  @@index([game_id])
+  @@index([pricing_mode_id])
+  @@map("game_pricings")
+}
+
+model Customer {
+  id              Int           @id @default(autoincrement())
+  created_at      DateTime?     @default(now())
+  updated_at      DateTime?     @default(now()) @updatedAt
+  organization_id Int?
+  organization    Organization? @relation(fields: [organization_id], references: [id], onDelete: SetNull)
+  name            String
+  phone           String?
+  email           String?
+  credit_balance  Decimal       @default(0) @db.Decimal(10, 2)
+  credit_limit    Decimal       @default(0) @db.Decimal(10, 2)
+  notes           String?
+  is_active       Boolean       @default(true)
+
+  sessions         GameSession[]
+  sales            Sale[]
+  credit_movements CustomerCreditMovement[]
+
+  @@index([organization_id])
+  @@map("customers")
+}
+
+model GameSession {
+  id                   Int           @id @default(autoincrement())
+  machine_id           Int
+  machine              Machine       @relation(fields: [machine_id], references: [id], onDelete: Cascade)
+  game_id              Int
+  game                 Game          @relation(fields: [game_id], references: [id], onDelete: Cascade)
+  pricing_mode_id      Int
+  pricing_mode         PricingMode   @relation(fields: [pricing_mode_id], references: [id])
+  pricing_reference_id Int
+  game_pricing         GamePricing   @relation(fields: [pricing_reference_id], references: [id])
+  customer_id          Int?
+  customer             Customer?     @relation(fields: [customer_id], references: [id], onDelete: SetNull)
+  start_time           DateTime?
+  ended_at             DateTime?
+  matches_played       Int?
+  end_time             DateTime?
+  status               String        @default("active")
+  computed_price       Decimal?      @db.Decimal(8, 2)
+  created_at           DateTime?     @default(now())
+  updated_at           DateTime?     @default(now()) @updatedAt
+  organization_id      Int?
+  organization         Organization? @relation(fields: [organization_id], references: [id], onDelete: SetNull)
+
+  payments Payment[]
+
+  @@index([machine_id])
+  @@index([game_id])
+  @@index([pricing_mode_id])
+  @@index([pricing_reference_id])
+  @@index([organization_id])
+  @@map("game_sessions")
+}
+
+model Payment {
+  id              Int           @id @default(autoincrement())
+  session_id      Int
+  session         GameSession   @relation(fields: [session_id], references: [id], onDelete: Cascade)
+  amount          Decimal       @db.Decimal(8, 2)
+  amount_given    Decimal?      @db.Decimal(8, 2)
+  change_given    Decimal       @default(0) @db.Decimal(8, 2)
+  payment_method  String        @default("cash")
+  payment_date    DateTime      @default(now())
+  staff_id        Int?
+  staff           User?         @relation("PaymentStaff", fields: [staff_id], references: [id], onDelete: SetNull)
+  notes           String?
+  created_at      DateTime?     @default(now())
+  updated_at      DateTime?     @default(now()) @updatedAt
+  organization_id Int?
+  organization    Organization? @relation(fields: [organization_id], references: [id], onDelete: SetNull)
+
+  @@index([session_id])
+  @@index([staff_id])
+  @@index([payment_date])
+  @@index([payment_date, payment_method])
+  @@index([organization_id])
+  @@map("payments")
+}
+
+model Product {
+  id              Int           @id @default(autoincrement())
+  name            String
+  category        String
+  price           Decimal       @db.Decimal(8, 2)
+  size            String?
+  stock           Int           @default(0)
+  is_available    Boolean       @default(true)
+  image           String?
+  created_at      DateTime?     @default(now())
+  updated_at      DateTime?     @default(now()) @updatedAt
+  organization_id Int?
+  organization    Organization? @relation(fields: [organization_id], references: [id], onDelete: SetNull)
+
+  sales ProductSale[]
+
+  @@index([organization_id])
+  @@map("products")
+}
+
+model ProductSale {
+  id              Int           @id @default(autoincrement())
+  product_id      Int
+  product         Product       @relation(fields: [product_id], references: [id], onDelete: Cascade)
+  staff_id        Int?
+  staff           User?         @relation("ProductSaleStaff", fields: [staff_id], references: [id], onDelete: SetNull)
+  quantity        Int
+  unit_price      Decimal       @db.Decimal(8, 2)
+  total_price     Decimal       @db.Decimal(8, 2)
+  payment_method  String        @default("cash")
+  sale_date       DateTime      @default(now())
+  created_at      DateTime?     @default(now())
+  updated_at      DateTime?     @default(now()) @updatedAt
+  organization_id Int?
+  organization    Organization? @relation(fields: [organization_id], references: [id], onDelete: SetNull)
+
+  @@index([product_id])
+  @@index([staff_id])
+  @@index([organization_id])
+  @@map("product_sales")
+}
+
+model CashRegister {
+  id               Int           @id @default(autoincrement())
+  date             DateTime      @db.Date
+  opening_balance  Decimal       @default(0) @db.Decimal(10, 2)
+  total_cash_in    Decimal       @default(0) @db.Decimal(10, 2)
+  total_change_out Decimal       @default(0) @db.Decimal(10, 2)
+  closing_balance  Decimal?      @db.Decimal(10, 2)
+  withdrawn_amount Decimal       @default(0) @db.Decimal(10, 2)
+  opened_by        Int?
+  opened_by_user   User?         @relation("RegisterOpenedBy", fields: [opened_by], references: [id], onDelete: SetNull)
+  closed_by        Int?
+  closed_by_user   User?         @relation("RegisterClosedBy", fields: [closed_by], references: [id], onDelete: SetNull)
+  opened_at        DateTime?
+  closed_at        DateTime?
+  notes            String?
+  created_at       DateTime?     @default(now())
+  updated_at       DateTime?     @default(now()) @updatedAt
+  organization_id  Int?
+  organization     Organization? @relation(fields: [organization_id], references: [id], onDelete: SetNull)
+
+  @@index([date, organization_id])
+  @@index([opened_by])
+  @@index([closed_by])
+  @@map("cash_registers")
+}
+
+model SubscriptionPlan {
+  id                Int       @id @default(autoincrement())
+  name              String
+  description       String?
+  price             Decimal   @default(0) @db.Decimal(10, 2)
+  grace_days        Int       @default(7)
+  limits            Json?
+  features          Json?
+  stripe_product_id String?
+  stripe_price_id   String?
+  created_at        DateTime? @default(now())
+  updated_at        DateTime? @default(now()) @updatedAt
+
+  subscriptions Subscription[]
+  invoices      SubscriptionInvoice[]
+
+  @@map("subscription_plans")
+}
+
+model Subscription {
+  id                     Int              @id @default(autoincrement())
+  organization_id        Int
+  organization           Organization     @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  subscription_plan_id   Int
+  plan                   SubscriptionPlan @relation(fields: [subscription_plan_id], references: [id], onDelete: Cascade)
+  starts_at              DateTime         @db.Date
+  ends_at                DateTime?        @db.Date
+  grace_days             Int              @default(7)
+  is_active              Boolean          @default(true)
+  notes                  String?
+  stripe_customer_id     String?
+  stripe_subscription_id String?          @unique
+  cancel_at_period_end   Boolean          @default(false)
+  created_at             DateTime?        @default(now())
+  updated_at             DateTime?        @default(now()) @updatedAt
+
+  invoices SubscriptionInvoice[]
+
+  @@index([organization_id])
+  @@index([subscription_plan_id])
+  @@map("subscriptions")
+}
+
+model SubscriptionInvoice {
+  id                   Int               @id @default(autoincrement())
+  organization_id      Int
+  organization         Organization      @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  subscription_id      Int?
+  subscription         Subscription?     @relation(fields: [subscription_id], references: [id], onDelete: SetNull)
+  subscription_plan_id Int?
+  plan                 SubscriptionPlan? @relation(fields: [subscription_plan_id], references: [id], onDelete: SetNull)
+  plan_name            String
+  amount               Decimal           @db.Decimal(10, 2)
+  currency             String            @default("MAD")
+  stripe_session_id    String?           @unique
+  status               String            @default("paid")
+  paid_at              DateTime?
+  created_at           DateTime?         @default(now())
+  updated_at           DateTime?         @default(now()) @updatedAt
+
+  @@index([organization_id])
+  @@index([subscription_id])
+  @@index([subscription_plan_id])
+  @@map("subscription_invoices")
+}
+
+model Coiffeur {
+  id              Int           @id @default(autoincrement())
+  organization_id Int?
+  organization    Organization? @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  name            String
+  phone           String?
+  is_active       Boolean       @default(true)
+  created_at      DateTime?     @default(now())
+  updated_at      DateTime?     @default(now()) @updatedAt
+
+  sales Sale[]
+
+  @@index([organization_id])
+  @@map("coiffeurs")
+}
+
+model Service {
+  id              Int           @id @default(autoincrement())
+  organization_id Int?
+  organization    Organization? @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  name            String
+  category        String
+  price           Decimal       @db.Decimal(8, 2)
+  duration        Int?
+  is_active       Boolean       @default(true)
+  created_at      DateTime?     @default(now())
+  updated_at      DateTime?     @default(now()) @updatedAt
+
+  service_products ServiceProduct[]
+  sale_services    SaleService[]
+
+  @@index([organization_id])
+  @@map("services")
+}
+
+model ServiceCategory {
+  id              Int          @id @default(autoincrement())
+  organization_id Int
+  organization    Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  slug            String
+  label           String
+  sort_order      Int          @default(0)
+  created_at      DateTime?    @default(now())
+  updated_at      DateTime?    @default(now()) @updatedAt
+
+  @@unique([organization_id, slug])
+  @@map("service_categories")
+}
+
+model ServiceProduct {
+  id               Int          @id @default(autoincrement())
+  service_id       Int
+  service          Service      @relation(fields: [service_id], references: [id], onDelete: Cascade)
+  stock_product_id Int
+  stock_product    StockProduct @relation(fields: [stock_product_id], references: [id], onDelete: Cascade)
+  quantity_used    Decimal      @db.Decimal(10, 2)
+  created_at       DateTime?    @default(now())
+  updated_at       DateTime?    @default(now()) @updatedAt
+
+  @@index([service_id])
+  @@index([stock_product_id])
+  @@map("service_products")
+}
+
+model StockProduct {
+  id              Int           @id @default(autoincrement())
+  organization_id Int?
+  organization    Organization? @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  name            String
+  image           String?
+  category        String?
+  source          String        @default("salon")
+  unit            String        @default("unité")
+  size            String?
+  quantity        Decimal       @default(0) @db.Decimal(10, 2)
+  alert_threshold Decimal       @default(5) @db.Decimal(10, 2)
+  is_sellable     Boolean       @default(false)
+  sale_price      Decimal?      @db.Decimal(8, 2)
+  created_at      DateTime?     @default(now())
+  updated_at      DateTime?     @default(now()) @updatedAt
+
+  service_products ServiceProduct[]
+  sale_products    SaleProduct[]
+
+  @@index([organization_id])
+  @@map("stock_products")
+}
+
+model Sale {
+  id                Int           @id @default(autoincrement())
+  organization_id   Int?
+  organization      Organization? @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  ticket_number     String
+  coiffeur_id       Int?
+  coiffeur          Coiffeur?     @relation(fields: [coiffeur_id], references: [id], onDelete: SetNull)
+  customer_id       Int?
+  customer          Customer?     @relation(fields: [customer_id], references: [id], onDelete: SetNull)
+  staff_id          Int?
+  staff             User?         @relation("SaleStaff", fields: [staff_id], references: [id], onDelete: SetNull)
+  subtotal          Decimal       @db.Decimal(10, 2)
+  discount          Decimal       @default(0) @db.Decimal(10, 2)
+  tax_rate          Decimal       @default(0) @db.Decimal(5, 2)
+  tax_amount        Decimal       @default(0) @db.Decimal(10, 2)
+  total             Decimal       @db.Decimal(10, 2)
+  payment_method    String        @default("cash")
+  paid_on_credit    Boolean       @default(false)
+  sale_date         DateTime      @default(now())
+  cancelled_at      DateTime?
+  created_at        DateTime?     @default(now())
+  updated_at        DateTime?     @default(now()) @updatedAt
+  cancelled_by      Int?
+  cancelled_by_user User?         @relation("SaleCancelledBy", fields: [cancelled_by], references: [id], onDelete: SetNull)
+  cancel_reason     String?
+
+  services         SaleService[]
+  products         SaleProduct[]
+  stock_movements  StockMovement[]
+  credit_movements CustomerCreditMovement[]
+
+  @@unique([organization_id, ticket_number])
+  @@index([coiffeur_id])
+  @@index([customer_id])
+  @@index([staff_id])
+  @@index([sale_date])
+  @@map("sales")
+}
+
+model SaleProduct {
+  id               Int           @id @default(autoincrement())
+  sale_id          Int
+  sale             Sale          @relation(fields: [sale_id], references: [id], onDelete: Cascade)
+  stock_product_id Int?
+  stock_product    StockProduct? @relation(fields: [stock_product_id], references: [id], onDelete: SetNull)
+  product_name     String
+  unit_price       Decimal       @db.Decimal(8, 2)
+  quantity         Decimal       @default(1) @db.Decimal(10, 2)
+  created_at       DateTime?     @default(now())
+  updated_at       DateTime?     @default(now()) @updatedAt
+
+  @@index([sale_id])
+  @@index([stock_product_id])
+  @@map("sale_products")
+}
+
+model SaleService {
+  id           Int       @id @default(autoincrement())
+  sale_id      Int
+  sale         Sale      @relation(fields: [sale_id], references: [id], onDelete: Cascade)
+  service_id   Int?
+  service      Service?  @relation(fields: [service_id], references: [id], onDelete: SetNull)
+  service_name String
+  unit_price   Decimal   @db.Decimal(8, 2)
+  quantity     Int       @default(1)
+  created_at   DateTime? @default(now())
+  updated_at   DateTime? @default(now()) @updatedAt
+
+  @@index([sale_id])
+  @@index([service_id])
+  @@map("sale_services")
+}
+
+model StockMovement {
+  id              Int           @id @default(autoincrement())
+  organization_id Int?
+  organization    Organization? @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  movable_type    String
+  movable_id      Int
+  product_name    String
+  type            String
+  quantity_before Decimal       @db.Decimal(10, 2)
+  quantity_change Decimal       @db.Decimal(10, 2)
+  quantity_after  Decimal       @db.Decimal(10, 2)
+  sale_id         Int?
+  sale            Sale?         @relation(fields: [sale_id], references: [id], onDelete: SetNull)
+  user_id         Int?
+  user            User?         @relation(fields: [user_id], references: [id], onDelete: SetNull)
+  reason          String?
+  created_at      DateTime?     @default(now())
+  updated_at      DateTime?     @default(now()) @updatedAt
+
+  @@index([organization_id])
+  @@index([sale_id])
+  @@index([user_id])
+  @@index([movable_type, movable_id])
+  @@index([type])
+  @@map("stock_movements")
+}
+
+model CustomerCreditMovement {
+  id               Int          @id @default(autoincrement())
+  organization_id  Int
+  organization     Organization @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  customer_id      Int
+  customer         Customer     @relation(fields: [customer_id], references: [id], onDelete: Cascade)
+  sale_id          Int?
+  sale             Sale?        @relation(fields: [sale_id], references: [id], onDelete: SetNull)
+  recorded_by      Int?
+  recorded_by_user User?        @relation(fields: [recorded_by], references: [id], onDelete: SetNull)
+  type             String // charge | payment | adjustment
+  amount           Decimal      @db.Decimal(10, 2)
+  balance_after    Decimal      @db.Decimal(10, 2)
+  notes            String?
+  created_at       DateTime?    @default(now())
+  updated_at       DateTime?    @default(now()) @updatedAt
+
+  @@index([organization_id])
+  @@index([customer_id])
+  @@index([sale_id])
+  @@index([recorded_by])
+  @@map("customer_credit_movements")
+}
