@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import api from "../services/api";
 
 const PAYMENT_LABELS = {
@@ -7,8 +7,10 @@ const PAYMENT_LABELS = {
   mobile: "Mobile",
 };
 
-function TicketPrint({ sale, onClose, onNewSale }) {
+function TicketPrint({ sale, onClose, onNewSale, cashReceived = null, change = null, autoPrint = false }) {
   const [organization, setOrganization] = useState(null);
+  const [orgLoaded, setOrgLoaded] = useState(false);
+  const printedRef = useRef(false);
   const date = new Date(sale.sale_date);
   const dateStr = date.toLocaleDateString("fr-FR");
   const timeStr = date.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" });
@@ -16,8 +18,17 @@ function TicketPrint({ sale, onClose, onNewSale }) {
   useEffect(() => {
     api.get("/organization/settings")
       .then((res) => setOrganization(res.data.organization))
-      .catch(() => setOrganization(null));
+      .catch(() => setOrganization(null))
+      .finally(() => setOrgLoaded(true));
   }, []);
+
+  // Impression automatique une fois l'en-tête (organisation) chargé
+  useEffect(() => {
+    if (!autoPrint || !orgLoaded || printedRef.current) return;
+    printedRef.current = true;
+    const timer = setTimeout(() => window.print(), 150);
+    return () => clearTimeout(timer);
+  }, [autoPrint, orgLoaded]);
 
   const handlePrint = () => window.print();
 
@@ -125,6 +136,18 @@ function TicketPrint({ sale, onClose, onNewSale }) {
           <span>Paiement:</span>
           <span>{PAYMENT_LABELS[sale.payment_method] || sale.payment_method}</span>
         </div>
+        {cashReceived !== null && (
+          <>
+            <div style={styles.metaRow}>
+              <span>Reçu:</span>
+              <span>{parseFloat(cashReceived).toFixed(2)} DH</span>
+            </div>
+            <div style={styles.metaRow}>
+              <span>Rendu:</span>
+              <span>{parseFloat(change || 0).toFixed(2)} DH</span>
+            </div>
+          </>
+        )}
 
         <div style={styles.divider} />
 

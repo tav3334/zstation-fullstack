@@ -43,6 +43,7 @@ import SubscriptionBanner from "../components/SubscriptionBanner";
 import PricingPage from "./PricingPage";
 import OrganizationSettings from "./OrganizationSettings";
 import CustomersManagement from "./CustomersManagement";
+import PosPage from "./PosPage";
 
 function AdminDashboard({ user, onLogout, onUserUpdated }) {
   const [stats, setStats] = useState(null);
@@ -63,6 +64,7 @@ function AdminDashboard({ user, onLogout, onUserUpdated }) {
   const [showCustomersManagement, setShowCustomersManagement] = useState(false);
   const [showMachinesGames, setShowMachinesGames] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
+  const [showPos, setShowPos] = useState(false);
   const [showSubscription, setShowSubscription] = useState(false);
   const [subscriptionStatus, setSubscriptionStatus] = useState(null);
   const [showOrgSettings, setShowOrgSettings] = useState(false);
@@ -307,6 +309,7 @@ function AdminDashboard({ user, onLogout, onUserUpdated }) {
   const modules = user?.modules || { gaming: true, coiffure: true, stock: true };
   const menuItems = [
     { id: 'dashboard', label: 'Dashboard', icon: LayoutDashboard },
+    { id: 'pos', label: 'Caisse', icon: ShoppingCart },
     modules.coiffure && { id: 'services', label: 'Prestations', icon: Scissors },
     modules.coiffure && { id: 'coiffeurs', label: 'Coiffeurs', icon: Users },
     modules.stock && { id: 'salon-stock', label: 'Stock Produits', icon: Package },
@@ -319,6 +322,10 @@ function AdminDashboard({ user, onLogout, onUserUpdated }) {
     { id: 'subscription', label: 'Abonnement', icon: Crown },
     { id: 'profile', label: 'Mon Profil', icon: User },
   ].filter(Boolean);
+
+  if (showPos) {
+    return <PosPage user={user} onBack={() => setShowPos(false)} />;
+  }
 
   if (showServicesManagement) {
     return <ServicesManagement onBack={() => setShowServicesManagement(false)} />;
@@ -443,6 +450,8 @@ function AdminDashboard({ user, onLogout, onUserUpdated }) {
                 } else if (item.id === 'subscription') {
                   loadSubscriptionStatus();
                   setShowSubscription(true);
+                } else if (item.id === 'pos') {
+                  setShowPos(true);
                 } else if (item.id === 'profile') {
                   setShowProfile(true);
                 } else {
@@ -910,6 +919,8 @@ function AdminDashboard({ user, onLogout, onUserUpdated }) {
               } else if (item.id === 'subscription') {
                 loadSubscriptionStatus();
                 setShowSubscription(true);
+              } else if (item.id === 'pos') {
+                setShowPos(true);
               } else if (item.id === 'profile') {
                 setShowProfile(true);
               } else {

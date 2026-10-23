@@ -14,7 +14,8 @@ import {
   LayoutDashboard,
   Play,
   Square,
-  Scissors
+  Scissors,
+  ShoppingCart
 } from "lucide-react";
 import api from "../services/api";
 import SubscriptionBanner from "../components/SubscriptionBanner";
@@ -24,6 +25,7 @@ import PaymentModal from "../components/PaymentModal";
 import StatsCard from "../components/StatsCard";
 import Toast from "../components/Toast";
 import SaleModal from "../components/SaleModal";
+import PosPage from "./PosPage";
 import UserProfile from "../components/UserProfile";
 import MatchCountModal from "../components/MatchCountModal";
 
@@ -36,6 +38,7 @@ function Dashboard({ user, onLogout, onUserUpdated }) {
   const [paymentSessions, setPaymentSessions] = useState([]);
   const [activeTab, setActiveTab] = useState('machines');
   const [showSale, setShowSale] = useState(false);
+  const [showPos, setShowPos] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
   const [toast, setToast] = useState(null);
   const [matchCountSession, setMatchCountSession] = useState(null);
@@ -238,10 +241,15 @@ function Dashboard({ user, onLogout, onUserUpdated }) {
   const modules = user?.modules || { gaming: true, coiffure: true, stock: true };
   const menuItems = [
     modules.gaming && { id: 'machines', label: 'Machines', icon: Monitor, count: machines.length },
+    { id: 'pos', label: 'Caisse', icon: ShoppingCart },
     { id: 'sale', label: 'Vente', icon: Scissors },
     { id: 'stats', label: 'Statistiques', icon: BarChart3 },
     { id: 'profile', label: 'Mon Profil', icon: User },
   ].filter(Boolean);
+
+  if (showPos) {
+    return <PosPage user={user} onBack={() => setShowPos(false)} />;
+  }
 
   // ================= RENDER =================
   return (
@@ -291,6 +299,8 @@ function Dashboard({ user, onLogout, onUserUpdated }) {
               onClick={() => {
                 if (item.id === 'sale') {
                   setShowSale(true);
+                } else if (item.id === 'pos') {
+                  setShowPos(true);
                 } else if (item.id === 'profile') {
                   setShowProfile(true);
                 } else {
@@ -498,6 +508,8 @@ function Dashboard({ user, onLogout, onUserUpdated }) {
                 setShowProducts(true);
               } else if (item.id === 'sale') {
                 setShowSale(true);
+              } else if (item.id === 'pos') {
+                setShowPos(true);
               } else if (item.id === 'profile') {
                 setShowProfile(true);
               } else {
