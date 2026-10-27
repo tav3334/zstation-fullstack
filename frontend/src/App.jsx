@@ -105,7 +105,15 @@ function App() {
       if (token && savedUser) {
         try {
           api.defaults.headers.common['Authorization'] = `Bearer ${token}`;
-          const parsedUser = JSON.parse(savedUser);
+          let parsedUser = JSON.parse(savedUser);
+          // Rôle, permissions et code PIN ont pu changer depuis la dernière connexion
+          try {
+            const meRes = await api.get('/me');
+            parsedUser = { ...parsedUser, ...meRes.data.user };
+            localStorage.setItem('user', JSON.stringify(parsedUser));
+          } catch {
+            // hors ligne ou erreur ponctuelle : on garde l'utilisateur en cache (un 401 déconnecte déjà)
+          }
           setUser(parsedUser);
           // Après un retour Stripe (succès/annulation), laisser PaymentResult gérer
           // la vérification/activation — ne pas court-circuiter l'écran avec le

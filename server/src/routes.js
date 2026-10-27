@@ -13,6 +13,8 @@ import * as dashboard from './controllers/dashboard.js';
 import * as admin from './controllers/admin.js';
 import * as checkout from './controllers/checkout.js';
 import * as sa from './controllers/superAdmin.js';
+import * as reports from './controllers/reports.js';
+import { requirePermission } from './lib/permissions.js';
 
 const router = Router();
 
@@ -37,6 +39,9 @@ user.post('/logout', auth.logout);
 user.get('/me', auth.me);
 user.post('/change-password', auth.changePassword);
 user.put('/profile', auth.updateProfile);
+user.post('/profile/pin', auth.setPin);
+user.get('/team/cashiers', auth.cashiers);
+user.post('/pin-login', throttle(5, 1), auth.pinLogin);
 
 user.get('/organization/settings', admin.organizationShow);
 
@@ -93,10 +98,13 @@ user.get('/stock-products/low-stock', sub, salon.stockLow);
 user.post('/sales', sub, salon.salesStore);
 user.get('/sales', sub, salon.salesIndex);
 user.get('/sales/stats', sub, salon.salesStats);
+user.get('/sales/my-summary', sub, salon.salesMySummary);
 user.get('/sales/:id', sub, salon.salesShow);
 
 // ========== ROUTES ADMIN ==========
 const adm = [requireAdmin];
+// Ouvertes aux agents qui ont la permission correspondante
+const stockPerm = [requirePermission('access_stock')];
 
 user.post('/register', adm, auth.register);
 user.put('/organization/settings', adm, admin.organizationUpdate);
@@ -106,7 +114,10 @@ user.post('/service-categories', adm, salon.categoriesStore);
 user.put('/service-categories/:id', adm, salon.categoriesUpdate);
 user.delete('/service-categories/:id', adm, salon.categoriesDestroy);
 user.post('/team', adm, admin.teamStore);
+user.put('/team/:id', adm, admin.teamUpdate);
 user.delete('/team/:id', adm, admin.teamDestroy);
+user.get('/reports/staff', adm, reports.staffPerformance);
+user.get('/activity-logs', adm, reports.activityLogs);
 
 user.get('/machine-management', adm, admin.machinesIndex);
 user.post('/machine-management', adm, admin.machinesStore);
@@ -135,11 +146,11 @@ user.put('/products/:id/stock', adm, products.updateStock);
 user.delete('/products/:id', adm, products.destroy);
 
 user.post('/cash-register/opening-balance', adm, cash.setOpeningBalance);
-user.post('/cash-register/withdraw', adm, cash.withdraw);
+user.post('/cash-register/withdraw', [requirePermission('withdraw_cash')], cash.withdraw);
 user.post('/cash-register/close', adm, cash.closeRegister);
 
-user.post('/sales/:id/cancel', adm, salon.salesCancel);
-user.get('/stock-movements', adm, salon.stockMovements);
+user.post('/sales/:id/cancel', [requirePermission('cancel_sales')], salon.salesCancel);
+user.get('/stock-movements', stockPerm, salon.stockMovements);
 
 user.get('/services/all', adm, salon.servicesAll);
 user.post('/services', adm, salon.servicesStore);
@@ -151,11 +162,11 @@ user.post('/coiffeurs', adm, salon.coiffeursStore);
 user.put('/coiffeurs/:id', adm, salon.coiffeursUpdate);
 user.delete('/coiffeurs/:id', adm, salon.coiffeursDestroy);
 
-user.get('/stock-products/all', adm, salon.stockAll);
-user.post('/stock-products', adm, salon.stockStore);
-user.put('/stock-products/:id', adm, salon.stockUpdate);
-user.put('/stock-products/:id/quantity', adm, salon.stockUpdateQuantity);
-user.delete('/stock-products/:id', adm, salon.stockDestroy);
+user.get('/stock-products/all', stockPerm, salon.stockAll);
+user.post('/stock-products', stockPerm, salon.stockStore);
+user.put('/stock-products/:id', stockPerm, salon.stockUpdate);
+user.put('/stock-products/:id/quantity', stockPerm, salon.stockUpdateQuantity);
+user.delete('/stock-products/:id', stockPerm, salon.stockDestroy);
 
 // ========== SUPER ADMIN ==========
 const superAdmin = Router();

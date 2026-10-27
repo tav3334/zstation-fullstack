@@ -19,7 +19,7 @@ import useConfirm from "../hooks/useConfirm";
 
 const PAYMENT_LABELS = { cash: "Espèces", card: "Carte", mobile: "Mobile" };
 
-function CashRegister({ isAdmin = false, accentColor = "#f59e0b" }) {
+function CashRegister({ isAdmin = false, canWithdraw = false, accentColor = "#f59e0b" }) {
   const [register, setRegister] = useState(null);
   const [loading, setLoading] = useState(true);
   const [showWithdrawModal, setShowWithdrawModal] = useState(false);
@@ -259,7 +259,7 @@ function CashRegister({ isAdmin = false, accentColor = "#f59e0b" }) {
       </div>
 
       {/* Admin Actions */}
-      {isAdmin && (
+      {(isAdmin || canWithdraw) && (
         <div style={styles.actionsRow}>
           <button
             onClick={() => setShowWithdrawModal(true)}
@@ -269,7 +269,7 @@ function CashRegister({ isAdmin = false, accentColor = "#f59e0b" }) {
             <ArrowUpRight size={18} />
             Retirer Profit
           </button>
-          {register.closed_at ? (
+          {!isAdmin ? null : register.closed_at ? (
             <button onClick={() => openReportFor(register)} style={{...styles.actionBtn, background: '#3f3a30'}}>
               <Printer size={18} />
               Voir le rapport

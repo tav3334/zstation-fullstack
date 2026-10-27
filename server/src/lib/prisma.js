@@ -8,7 +8,7 @@ const globalForPrisma = globalThis;
 export const prisma =
   globalForPrisma.__prisma ??
   new PrismaClient({
-    omit: { user: { password: true, remember_token: true } },
+    omit: { user: { password: true, remember_token: true, pin_hash: true } },
   });
 
 if (!globalForPrisma.__prisma) globalForPrisma.__prisma = prisma;

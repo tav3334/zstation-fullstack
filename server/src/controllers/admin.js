@@ -1,24 +1,61 @@
 // Gestion par l'admin de son organisation : équipe, infos fiscales, machines, jeux et tarifs
 // (TeamController, OrganizationSettingsController, MachineManagementController, GameManagementController).
 import { prisma } from '../lib/prisma.js';
-import { bool, has, input, orFail, pick } from '../lib/http.js';
+import { abort, bool, has, input, orFail, pick } from '../lib/http.js';
 import { validate, validateOrFail } from '../lib/validate.js';
 import { checkLimit } from '../lib/limits.js';
-import { hashPassword } from '../lib/auth.js';
+import { hashPassword, revokeTokens } from '../lib/auth.js';
+import { permissionsOf, sanitizePermissions } from '../lib/permissions.js';
+import { ACTIVITY, logActivity } from '../lib/activity.js';
 
 // ═════════════════════════════ Équipe ═════════════════════════════
 
-const TEAM_SELECT = { id: true, name: true, email: true, role: true, created_at: true };
+const TEAM_SELECT = {
+  id: true,
+  name: true,
+  email: true,
+  role: true,
+  created_at: true,
+  is_active: true,
+  permissions: true,
+  last_login_at: true,
+  pin_hash: true,
+};
+
+const TEAM_RULES = {
+  pin: 'nullable|string|min:4|max:6',
+  permissions: 'nullable',
+};
+
+/** Membre tel qu'exposé au frontend (jamais le hash du PIN). */
+function formatMember({ pin_hash: pinHash, ...member }) {
+  return { ...member, has_pin: !!pinHash, permissions: permissionsOf(member) };
+}
+
+async function hashPin(pin) {
+  if (pin == null || pin === '') return null;
+  if (!/^\d{4,6}$/.test(String(pin))) abort(422, 'Le code PIN doit contenir 4 à 6 chiffres.');
+  return hashPassword(pin);
+}
+
+function findMember(req) {
+  return prisma.user
+    .findFirst({
+      where: { id: Number(req.params.id), organization_id: req.user.organization_id, role: { in: ['admin', 'agent'] } },
+      select: TEAM_SELECT,
+    })
+    .then((member) => orFail(member, 'User', req.params.id));
+}
 
 export async function teamIndex(req, res) {
   const orgId = req.user.organization_id;
   const team = await prisma.user.findMany({
     where: { organization_id: orgId, role: { in: ['admin', 'agent'] } },
-    orderBy: { name: 'asc' },
+    orderBy: [{ is_active: 'desc' }, { name: 'asc' }],
     select: TEAM_SELECT,
   });
   const limit = await checkLimit(orgId, 'max_users');
-  res.json({ team, count: team.length, limit_message: limit.allowed ? null : limit.message });
+  res.json({ team: team.map(formatMember), count: team.length, limit_message: limit.allowed ? null : limit.message });
 }
 
 export async function teamStore(req, res) {
@@ -28,6 +65,7 @@ export async function teamStore(req, res) {
     email: 'required|email|unique:users',
     password: 'required|min:6',
     role: 'required|in:admin,agent',
+    ...TEAM_RULES,
   });
 
   const orgId = req.user.organization_id;
@@ -35,10 +73,113 @@ export async function teamStore(req, res) {
   if (!limit.allowed) return res.status(403).json({ message: limit.message });
 
   const user = await prisma.user.create({
-    data: { name: data.name, email: data.email, password: await hashPassword(data.password), role: data.role, organization_id: orgId },
+    data: {
+      name: data.name,
+      email: data.email,
+      password: await hashPassword(data.password),
+      role: data.role,
+      organization_id: orgId,
+      pin_hash: await hashPin(data.pin),
+      permissions: sanitizePermissions(data.permissions),
+    },
     select: TEAM_SELECT,
   });
-  res.status(201).json({ message: "Membre de l'équipe créé avec succès", user });
+  await logActivity(req.user, ACTIVITY.TEAM_CREATE, `${req.user.name} a ajouté ${user.name} (${user.role})`);
+  res.status(201).json({ message: "Membre de l'équipe créé avec succès", user: formatMember(user) });
+}
+
+export async function teamUpdate(req, res) {
+  const data = input(req);
+  const member = await findMember(req);
+  await validate(data, {
+    name: 'sometimes|required|string|max:255',
+    email: `sometimes|required|email|unique:users,email,${member.id}`,
+    role: 'sometimes|required|in:admin,agent',
+    is_active: 'boolean',
+    password: 'nullable|min:6',
+    remove_pin: 'boolean',
+    ...TEAM_RULES,
+  });
+
+  const isSelf = member.id === req.user.id;
+  const newRole = data.role ?? member.role;
+  const newActive = has(data, 'is_active') ? bool(data.is_active) : member.is_active;
+
+  if (isSelf && (newRole !== member.role || !newActive)) {
+    return res.status(403).json({ message: 'Vous ne pouvez pas changer votre propre rôle ni désactiver votre compte.' });
+  }
+  // Il doit toujours rester un admin actif dans l'organisation
+  if (member.role === 'admin' && member.is_active && (newRole !== 'admin' || !newActive)) {
+    const otherAdmins = await prisma.user.count({
+      where: { organization_id: req.user.organization_id, role: 'admin', is_active: true, NOT: { id: member.id } },
+    });
+    if (otherAdmins === 0) return res.status(422).json({ message: 'Il doit rester au moins un administrateur actif.' });
+  }
+  // Réactiver un compte reprend une place dans la limite du plan
+  if (!member.is_active && newActive) {
+    const limit = await checkLimit(req.user.organization_id, 'max_users');
+    if (!limit.allowed) return res.status(403).json({ message: limit.message });
+  }
+
+  const changes = {};
+  const notes = [];
+  if (data.name != null && data.name !== member.name) {
+    changes.name = data.name;
+    notes.push('nom');
+  }
+  if (data.email != null && data.email !== member.email) {
+    changes.email = data.email;
+    notes.push('email');
+  }
+  if (newRole !== member.role) {
+    changes.role = newRole;
+    notes.push(`rôle → ${newRole}`);
+  }
+  if (newActive !== member.is_active) changes.is_active = newActive;
+  if (data.password) {
+    changes.password = await hashPassword(data.password);
+    notes.push('mot de passe réinitialisé');
+  }
+  if (bool(data.remove_pin)) {
+    changes.pin_hash = null;
+    notes.push('PIN supprimé');
+  } else if (data.pin) {
+    changes.pin_hash = await hashPin(data.pin);
+    notes.push('PIN modifié');
+  }
+  if (has(data, 'permissions')) {
+    // Comparaison des droits effectifs (valeurs par défaut incluses)
+    const next = sanitizePermissions(data.permissions);
+    const effective = (perms) => permissionsOf({ role: 'agent', permissions: perms });
+    const after = effective(next);
+    const before = effective(member.permissions);
+    if (Object.keys(after).some((k) => after[k] !== before[k])) {
+      changes.permissions = next;
+      notes.push('permissions');
+    }
+  }
+
+  const updated = await prisma.user.update({ where: { id: member.id }, data: changes, select: TEAM_SELECT });
+
+  // Mot de passe réinitialisé ou compte désactivé : toutes ses sessions sont fermées
+  if (data.password || !newActive) await revokeTokens(member.id);
+
+  if (newActive !== member.is_active) {
+    await logActivity(
+      req.user,
+      newActive ? ACTIVITY.TEAM_ACTIVATE : ACTIVITY.TEAM_DEACTIVATE,
+      `${req.user.name} a ${newActive ? 'réactivé' : 'désactivé'} le compte de ${updated.name}`,
+    );
+  }
+  if (data.password) {
+    await logActivity(req.user, ACTIVITY.TEAM_PASSWORD_RESET, `${req.user.name} a réinitialisé le mot de passe de ${updated.name}`);
+  }
+  const otherNotes = notes.filter((n) => n !== 'mot de passe réinitialisé');
+  if (otherNotes.length) {
+    await logActivity(req.user, ACTIVITY.TEAM_UPDATE, `${req.user.name} a modifié ${updated.name}${otherNotes.length ? ` (${otherNotes.join(', ')})` : ''}`);
+  }
+
+  res.json({ message: 'Membre mis à jour', user: formatMember(updated) });
 }
 
 export async function teamDestroy(req, res) {
@@ -46,14 +187,41 @@ export async function teamDestroy(req, res) {
   if (id === req.user.id) {
     return res.status(403).json({ message: 'Vous ne pouvez pas supprimer votre propre compte.' });
   }
-  const user = orFail(
-    await prisma.user.findFirst({
-      where: { id, organization_id: req.user.organization_id, role: { in: ['admin', 'agent'] } },
-    }),
-    'User',
-    req.params.id,
-  );
-  await prisma.user.delete({ where: { id: user.id } });
+  const member = await findMember(req);
+
+  // Un membre qui a un historique est désactivé, pas supprimé : on garde la trace de qui a vendu quoi
+  const usage = await prisma.user.findUnique({
+    where: { id: member.id },
+    select: {
+      _count: {
+        select: {
+          sales: true,
+          payments: true,
+          product_sales: true,
+          cancelled_sales: true,
+          opened_registers: true,
+          closed_registers: true,
+          stock_movements: true,
+          credit_movements: true,
+        },
+      },
+    },
+  });
+  if (Object.values(usage._count).some((n) => n > 0)) {
+    return res.status(409).json({
+      message: `${member.name} a un historique (ventes, caisse…) : désactivez ce compte plutôt que de le supprimer.`,
+    });
+  }
+  if (member.role === 'admin' && member.is_active) {
+    const otherAdmins = await prisma.user.count({
+      where: { organization_id: req.user.organization_id, role: 'admin', is_active: true, NOT: { id: member.id } },
+    });
+    if (otherAdmins === 0) return res.status(422).json({ message: 'Il doit rester au moins un administrateur actif.' });
+  }
+
+  await prisma.user.delete({ where: { id: member.id } });
+  await revokeTokens(member.id);
+  await logActivity(req.user, ACTIVITY.TEAM_DELETE, `${req.user.name} a supprimé le compte de ${member.name}`);
   res.json({ message: "Membre de l'équipe supprimé avec succès" });
 }
 

@@ -44,6 +44,9 @@ import PricingPage from "./PricingPage";
 import OrganizationSettings from "./OrganizationSettings";
 import CustomersManagement from "./CustomersManagement";
 import PosPage from "./PosPage";
+import StaffPerformancePage from "./StaffPerformancePage";
+import ActivityLogPage from "./ActivityLogPage";
+import { clearReopenPos, shouldReopenPos } from "../utils/session";
 
 function AdminDashboard({ user, onLogout, onUserUpdated }) {
   const [stats, setStats] = useState(null);
@@ -64,7 +67,9 @@ function AdminDashboard({ user, onLogout, onUserUpdated }) {
   const [showCustomersManagement, setShowCustomersManagement] = useState(false);
   const [showMachinesGames, setShowMachinesGames] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
-  const [showPos, setShowPos] = useState(false);
+  const [showPos, setShowPos] = useState(shouldReopenPos);
+  const [showStaffPerformance, setShowStaffPerformance] = useState(false);
+  const [showActivityLog, setShowActivityLog] = useState(false);
   const [showSubscription, setShowSubscription] = useState(false);
   const [subscriptionStatus, setSubscriptionStatus] = useState(null);
   const [showOrgSettings, setShowOrgSettings] = useState(false);
@@ -72,6 +77,11 @@ function AdminDashboard({ user, onLogout, onUserUpdated }) {
   const [currentTime, setCurrentTime] = useState(new Date());
   const [activeTab, setActiveTab] = useState('dashboard');
   const [cashRegister, setCashRegister] = useState(null);
+
+  // Drapeau « rouvrir la caisse » posé par un changement de caissier : à usage unique
+  useEffect(() => {
+    clearReopenPos();
+  }, []);
 
   const showToast = useCallback((message, type = "info", duration = 3000) => {
     setToast({ message, type, duration });
@@ -317,11 +327,21 @@ function AdminDashboard({ user, onLogout, onUserUpdated }) {
     { id: 'customers', label: 'Clients', icon: UserPlus },
     { id: 'stock-movements', label: 'Mouvements Stock', icon: ArrowLeftRight },
     { id: 'team', label: 'Mon Équipe', icon: Users },
+    { id: 'staff-performance', label: 'Performance équipe', icon: TrendingUp },
+    { id: 'activity-log', label: "Journal d'activité", icon: Activity },
     modules.gaming && { id: 'machines-games', label: 'Machines & Jeux', icon: Gamepad2 },
     { id: 'org-settings', label: 'Informations légales', icon: FileText },
     { id: 'subscription', label: 'Abonnement', icon: Crown },
     { id: 'profile', label: 'Mon Profil', icon: User },
   ].filter(Boolean);
+
+  if (showStaffPerformance) {
+    return <StaffPerformancePage onBack={() => setShowStaffPerformance(false)} modules={modules} />;
+  }
+
+  if (showActivityLog) {
+    return <ActivityLogPage onBack={() => setShowActivityLog(false)} />;
+  }
 
   if (showPos) {
     return <PosPage user={user} onBack={() => setShowPos(false)} />;
@@ -348,7 +368,7 @@ function AdminDashboard({ user, onLogout, onUserUpdated }) {
   }
 
   if (showTeamManagement) {
-    return <TeamManagement onBack={() => setShowTeamManagement(false)} />;
+    return <TeamManagement onBack={() => setShowTeamManagement(false)} currentUser={user} />;
   }
 
   if (showCustomersManagement) {
@@ -450,6 +470,10 @@ function AdminDashboard({ user, onLogout, onUserUpdated }) {
                 } else if (item.id === 'subscription') {
                   loadSubscriptionStatus();
                   setShowSubscription(true);
+                } else if (item.id === 'staff-performance') {
+                  setShowStaffPerformance(true);
+                } else if (item.id === 'activity-log') {
+                  setShowActivityLog(true);
                 } else if (item.id === 'pos') {
                   setShowPos(true);
                 } else if (item.id === 'profile') {
@@ -919,6 +943,10 @@ function AdminDashboard({ user, onLogout, onUserUpdated }) {
               } else if (item.id === 'subscription') {
                 loadSubscriptionStatus();
                 setShowSubscription(true);
+              } else if (item.id === 'staff-performance') {
+                setShowStaffPerformance(true);
+              } else if (item.id === 'activity-log') {
+                setShowActivityLog(true);
               } else if (item.id === 'pos') {
                 setShowPos(true);
               } else if (item.id === 'profile') {

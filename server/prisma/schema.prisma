@@ -54,6 +54,7 @@ model Organization {
   sales                     Sale[]
   stock_movements           StockMovement[]
   customer_credit_movements CustomerCreditMovement[]
+  activity_logs             ActivityLog[]
 
   @@map("organizations")
 }
@@ -65,19 +66,24 @@ model User {
   password        String
   role            String        @default("agent")
   remember_token  String?
+  is_active       Boolean       @default(true)
+  pin_hash        String?
+  permissions     Json?
+  last_login_at   DateTime?
   created_at      DateTime?     @default(now())
   updated_at      DateTime?     @default(now()) @updatedAt
   organization_id Int?
   organization    Organization? @relation(fields: [organization_id], references: [id], onDelete: SetNull)
 
-  payments          Payment[]                @relation("PaymentStaff")
-  product_sales     ProductSale[]            @relation("ProductSaleStaff")
-  sales             Sale[]                   @relation("SaleStaff")
-  cancelled_sales   Sale[]                   @relation("SaleCancelledBy")
-  stock_movements   StockMovement[]
-  credit_movements  CustomerCreditMovement[]
-  opened_registers  CashRegister[]           @relation("RegisterOpenedBy")
-  closed_registers  CashRegister[]           @relation("RegisterClosedBy")
+  payments         Payment[]                @relation("PaymentStaff")
+  product_sales    ProductSale[]            @relation("ProductSaleStaff")
+  sales            Sale[]                   @relation("SaleStaff")
+  cancelled_sales  Sale[]                   @relation("SaleCancelledBy")
+  stock_movements  StockMovement[]
+  credit_movements CustomerCreditMovement[]
+  opened_registers CashRegister[]           @relation("RegisterOpenedBy")
+  closed_registers CashRegister[]           @relation("RegisterClosedBy")
+  activity_logs    ActivityLog[]
 
   @@index([organization_id])
   @@map("users")
@@ -609,4 +615,20 @@ model CustomerCreditMovement {
   @@index([sale_id])
   @@index([recorded_by])
   @@map("customer_credit_movements")
+}
+
+// Journal d'activité de l'équipe (connexions, annulations, caisse, gestion de l'équipe…)
+model ActivityLog {
+  id              Int           @id @default(autoincrement())
+  organization_id Int?
+  organization    Organization? @relation(fields: [organization_id], references: [id], onDelete: Cascade)
+  user_id         Int?
+  user            User?         @relation(fields: [user_id], references: [id], onDelete: SetNull)
+  action          String
+  description     String
+  created_at      DateTime      @default(now())
+
+  @@index([organization_id, created_at])
+  @@index([user_id])
+  @@map("activity_logs")
 }

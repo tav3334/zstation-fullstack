@@ -2,68 +2,153 @@ import { useCallback, useEffect, useState } from "react";
 import api from "../services/api";
 import Toast from "../components/Toast";
 import useConfirm from "../hooks/useConfirm";
+import { PERMISSION_LABELS } from "../utils/permissions";
 
 const ROLE_LABELS = { admin: "Admin", agent: "Agent" };
 
-function TeamManagement({ onBack }) {
+const DEFAULT_PERMISSIONS = {
+  sell_on_credit: true,
+  cancel_sales: false,
+  access_stock: false,
+  withdraw_cash: false,
+  view_all_sales: false,
+  max_discount_percent: 100,
+};
+
+const emptyForm = () => ({
+  name: "",
+  email: "",
+  password: "",
+  role: "agent",
+  pin: "",
+  remove_pin: false,
+  permissions: { ...DEFAULT_PERMISSIONS },
+});
+
+function formatLastLogin(value) {
+  if (!value) return "Jamais connecté(e)";
+  const date = new Date(value);
+  const minutes = Math.round((Date.now() - date.getTime()) / 60000);
+  if (minutes < 1) return "Connecté(e) à l'instant";
+  if (minutes < 60) return `Dernière connexion il y a ${minutes} min`;
+  if (minutes < 24 * 60) return `Dernière connexion il y a ${Math.round(minutes / 60)} h`;
+  return `Dernière connexion le ${date.toLocaleDateString("fr-FR")} à ${date.toLocaleTimeString("fr-FR", { hour: "2-digit", minute: "2-digit" })}`;
+}
+
+function TeamManagement({ onBack, currentUser }) {
   const [team, setTeam] = useState([]);
   const [limitMessage, setLimitMessage] = useState(null);
   const [loading, setLoading] = useState(true);
-  const [showModal, setShowModal] = useState(false);
+  const [editing, setEditing] = useState(null); // null = fermé, {} = création, membre = édition
   const [toast, setToast] = useState(null);
-  const [formData, setFormData] = useState({ name: "", email: "", password: "", role: "agent" });
+  const [formData, setFormData] = useState(emptyForm);
   const [saving, setSaving] = useState(false);
   const { confirm, ConfirmModal } = useConfirm();
+
+  const isEdit = !!editing?.id;
 
   const showToast = useCallback((message, type = "info", duration = 3000) => {
     setToast({ message, type, duration });
   }, []);
 
-  const loadTeam = useCallback(async () => {
-    setLoading(true);
-    try {
-      const res = await api.get("/team");
-      setTeam(res.data.team);
-      setLimitMessage(res.data.limit_message);
-    } catch (e) {
-      showToast("Erreur chargement équipe: " + (e.response?.data?.message || e.message), "error");
-    } finally {
-      setLoading(false);
-    }
-  }, [showToast]);
+  const loadTeam = useCallback(
+    () =>
+      api
+        .get("/team")
+        .then((res) => {
+          setTeam(res.data.team);
+          setLimitMessage(res.data.limit_message);
+        })
+        .catch((e) => showToast("Erreur chargement équipe: " + (e.response?.data?.message || e.message), "error"))
+        .finally(() => setLoading(false)),
+    [showToast]
+  );
 
   useEffect(() => {
     loadTeam();
   }, [loadTeam]);
 
   const openAddModal = () => {
-    setFormData({ name: "", email: "", password: "", role: "agent" });
-    setShowModal(true);
+    setFormData(emptyForm());
+    setEditing({});
   };
+
+  const openEditModal = (member) => {
+    setFormData({
+      ...emptyForm(),
+      name: member.name,
+      email: member.email,
+      role: member.role,
+      permissions: { ...DEFAULT_PERMISSIONS, ...(member.permissions || {}) },
+    });
+    setEditing(member);
+  };
+
+  const setPermission = (key, value) =>
+    setFormData((prev) => ({ ...prev, permissions: { ...prev.permissions, [key]: value } }));
 
   const handleSubmit = async (e) => {
     e.preventDefault();
+    if (formData.pin && !/^\d{4,6}$/.test(formData.pin)) {
+      showToast("Le code PIN doit contenir 4 à 6 chiffres.", "error");
+      return;
+    }
     setSaving(true);
     try {
-      await api.post("/team", formData);
-      showToast("Membre de l'équipe créé avec succès", "success");
-      setShowModal(false);
+      const payload = {
+        name: formData.name,
+        email: formData.email,
+        role: formData.role,
+        permissions: formData.permissions,
+      };
+      if (formData.password) payload.password = formData.password;
+      if (formData.remove_pin) payload.remove_pin = true;
+      else if (formData.pin) payload.pin = formData.pin;
+
+      if (isEdit) {
+        await api.put(`/team/${editing.id}`, payload);
+        showToast(
+          formData.password ? "Membre mis à jour — ses sessions ont été déconnectées" : "Membre mis à jour",
+          "success"
+        );
+      } else {
+        await api.post("/team", payload);
+        showToast("Membre de l'équipe créé avec succès", "success");
+      }
+      setEditing(null);
       loadTeam();
     } catch (e) {
-      showToast(e.response?.data?.message || "Erreur lors de la création", "error");
+      showToast(e.response?.data?.message || "Erreur lors de l'enregistrement", "error");
     } finally {
       setSaving(false);
     }
   };
 
+  const handleToggleActive = async (member) => {
+    const deactivate = member.is_active;
+    if (
+      deactivate &&
+      !(await confirm(`Désactiver ${member.name} ? Il/elle sera déconnecté(e) et ne pourra plus se connecter. Son historique est conservé.`))
+    ) {
+      return;
+    }
+    try {
+      await api.put(`/team/${member.id}`, { is_active: !deactivate });
+      showToast(deactivate ? `${member.name} a été désactivé(e)` : `${member.name} a été réactivé(e)`, "success");
+      loadTeam();
+    } catch (e) {
+      showToast(e.response?.data?.message || "Erreur", "error");
+    }
+  };
+
   const handleDelete = async (member) => {
-    if (!(await confirm(`Êtes-vous sûr de vouloir supprimer ${member.name} ?`))) return;
+    if (!(await confirm(`Supprimer définitivement ${member.name} ?`))) return;
     try {
       await api.delete(`/team/${member.id}`);
       showToast("Membre supprimé avec succès", "success");
       loadTeam();
     } catch (e) {
-      showToast(e.response?.data?.message || "Erreur lors de la suppression", "error");
+      showToast(e.response?.data?.message || "Erreur lors de la suppression", "error", 5000);
     }
   };
 
@@ -77,7 +162,7 @@ function TeamManagement({ onBack }) {
   }
 
   return (
-    <div style={styles.container}>
+    <div style={styles.container} className="team-page">
       {toast && <Toast {...toast} onClose={() => setToast(null)} />}
       {ConfirmModal}
 
@@ -89,28 +174,58 @@ function TeamManagement({ onBack }) {
         <button onClick={openAddModal} style={styles.addBtn}>+ Ajouter un membre</button>
       </div>
 
-      {limitMessage && (
-        <div style={styles.limitBanner}>{limitMessage}</div>
-      )}
+      {limitMessage && <div style={styles.limitBanner}>{limitMessage}</div>}
 
       <div style={styles.grid}>
-        {team.map((member) => (
-          <div key={member.id} style={styles.card}>
-            <div style={styles.avatar}>{member.name.charAt(0).toUpperCase()}</div>
-            <div style={styles.cardName}>{member.name}</div>
-            <div style={styles.cardEmail}>{member.email}</div>
-            <div style={{
-              ...styles.roleBadge,
-              background: member.role === "admin" ? "rgba(201,162,75,0.12)" : "rgba(59,130,246,0.1)",
-              color: member.role === "admin" ? "#a5822f" : "#2563eb",
-            }}>
-              {ROLE_LABELS[member.role] || member.role}
+        {team.map((member) => {
+          const isSelf = member.id === currentUser?.id;
+          const grants = member.role === "agent"
+            ? Object.entries(PERMISSION_LABELS).filter(([key]) => member.permissions?.[key]).map(([, label]) => label)
+            : [];
+          return (
+            <div key={member.id} style={{ ...styles.card, ...(member.is_active ? {} : styles.cardInactive) }}>
+              <div style={styles.avatar}>{member.name.charAt(0).toUpperCase()}</div>
+              <div style={styles.cardName}>
+                {member.name}
+                {isSelf && <span style={styles.selfTag}> (vous)</span>}
+              </div>
+              <div style={styles.cardEmail}>{member.email}</div>
+              <div style={styles.badges}>
+                <span
+                  style={{
+                    ...styles.badge,
+                    background: member.role === "admin" ? "rgba(201,162,75,0.12)" : "rgba(59,130,246,0.1)",
+                    color: member.role === "admin" ? "#a5822f" : "#2563eb",
+                  }}
+                >
+                  {ROLE_LABELS[member.role] || member.role}
+                </span>
+                {!member.is_active && <span style={{ ...styles.badge, ...styles.badgeInactive }}>Désactivé</span>}
+                {member.has_pin && <span style={{ ...styles.badge, ...styles.badgePin }}>PIN</span>}
+              </div>
+              <div style={styles.lastLogin}>{formatLastLogin(member.last_login_at)}</div>
+              {member.role === "agent" && (
+                <div style={styles.permSummary}>
+                  {grants.length ? grants.join(" · ") : "Aucune permission particulière"}
+                  {member.permissions?.max_discount_percent < 100 && ` · Remise max ${member.permissions.max_discount_percent} %`}
+                </div>
+              )}
+              <div style={styles.cardActions}>
+                <button onClick={() => openEditModal(member)} style={styles.editBtn}>✏️ Modifier</button>
+                {!isSelf && (
+                  <button onClick={() => handleToggleActive(member)} style={member.is_active ? styles.deactivateBtn : styles.activateBtn}>
+                    {member.is_active ? "Désactiver" : "Réactiver"}
+                  </button>
+                )}
+                {!isSelf && (
+                  <button onClick={() => handleDelete(member)} style={styles.deleteBtn} title="Supprimer" aria-label="Supprimer">
+                    🗑️
+                  </button>
+                )}
+              </div>
             </div>
-            <div style={styles.cardActions}>
-              <button onClick={() => handleDelete(member)} style={styles.deleteBtn}>🗑️ Supprimer</button>
-            </div>
-          </div>
-        ))}
+          );
+        })}
       </div>
 
       {team.length === 0 && (
@@ -120,23 +235,37 @@ function TeamManagement({ onBack }) {
         </div>
       )}
 
-      {showModal && (
+      {editing && (
         <div style={styles.modalOverlay}>
           <div style={styles.modal}>
             <div style={styles.modalHeader}>
-              <h2 style={styles.modalTitle}>Ajouter un membre</h2>
-              <button onClick={() => setShowModal(false)} style={styles.modalCloseBtn}>✕</button>
+              <h2 style={styles.modalTitle}>{isEdit ? `Modifier ${editing.name}` : "Ajouter un membre"}</h2>
+              <button onClick={() => setEditing(null)} style={styles.modalCloseBtn}>✕</button>
             </div>
             <form onSubmit={handleSubmit} style={styles.form}>
-              <div style={styles.formGroup}>
-                <label style={styles.label}>Nom</label>
-                <input
-                  type="text"
-                  value={formData.name}
-                  onChange={(e) => setFormData({ ...formData, name: e.target.value })}
-                  style={styles.input}
-                  required
-                />
+              <div style={styles.formRow}>
+                <div style={styles.formGroup}>
+                  <label style={styles.label}>Nom</label>
+                  <input
+                    type="text"
+                    value={formData.name}
+                    onChange={(e) => setFormData({ ...formData, name: e.target.value })}
+                    style={styles.input}
+                    required
+                  />
+                </div>
+                <div style={styles.formGroup}>
+                  <label style={styles.label}>Rôle</label>
+                  <select
+                    value={formData.role}
+                    onChange={(e) => setFormData({ ...formData, role: e.target.value })}
+                    style={styles.input}
+                    disabled={isEdit && editing.id === currentUser?.id}
+                  >
+                    <option value="agent">Agent</option>
+                    <option value="admin">Admin</option>
+                  </select>
+                </div>
               </div>
               <div style={styles.formGroup}>
                 <label style={styles.label}>Email</label>
@@ -148,38 +277,92 @@ function TeamManagement({ onBack }) {
                   required
                 />
               </div>
-              <div style={styles.formGroup}>
-                <label style={styles.label}>Mot de passe</label>
-                <input
-                  type="password"
-                  value={formData.password}
-                  onChange={(e) => setFormData({ ...formData, password: e.target.value })}
-                  style={styles.input}
-                  minLength={6}
-                  required
-                />
+              <div style={styles.formRow}>
+                <div style={styles.formGroup}>
+                  <label style={styles.label}>{isEdit ? "Nouveau mot de passe" : "Mot de passe"}</label>
+                  <input
+                    type="password"
+                    value={formData.password}
+                    onChange={(e) => setFormData({ ...formData, password: e.target.value })}
+                    style={styles.input}
+                    minLength={6}
+                    required={!isEdit}
+                    placeholder={isEdit ? "Laisser vide = inchangé" : ""}
+                    autoComplete="new-password"
+                  />
+                </div>
+                <div style={styles.formGroup}>
+                  <label style={styles.label}>Code PIN caisse (4-6 chiffres)</label>
+                  <input
+                    type="password"
+                    inputMode="numeric"
+                    value={formData.pin}
+                    onChange={(e) => setFormData({ ...formData, pin: e.target.value.replace(/\D/g, "").slice(0, 6), remove_pin: false })}
+                    style={styles.input}
+                    placeholder={isEdit && editing.has_pin ? "Laisser vide = inchangé" : "Optionnel"}
+                    autoComplete="off"
+                  />
+                </div>
               </div>
-              <div style={styles.formGroup}>
-                <label style={styles.label}>Rôle</label>
-                <select
-                  value={formData.role}
-                  onChange={(e) => setFormData({ ...formData, role: e.target.value })}
-                  style={styles.input}
-                >
-                  <option value="agent">Agent</option>
-                  <option value="admin">Admin</option>
-                </select>
-              </div>
+              {isEdit && formData.password && (
+                <div style={styles.hint}>Toutes les sessions ouvertes de ce membre seront déconnectées.</div>
+              )}
+              {isEdit && editing.has_pin && (
+                <label style={styles.checkboxLabel}>
+                  <input
+                    type="checkbox"
+                    checked={formData.remove_pin}
+                    onChange={(e) => setFormData({ ...formData, remove_pin: e.target.checked, pin: "" })}
+                  />
+                  Supprimer le code PIN
+                </label>
+              )}
+
+              {formData.role === "agent" && (
+                <fieldset style={styles.permBox}>
+                  <legend style={styles.permLegend}>Permissions de l'agent</legend>
+                  {Object.entries(PERMISSION_LABELS).map(([key, label]) => (
+                    <label key={key} style={styles.checkboxLabel}>
+                      <input
+                        type="checkbox"
+                        checked={!!formData.permissions[key]}
+                        onChange={(e) => setPermission(key, e.target.checked)}
+                      />
+                      {label}
+                    </label>
+                  ))}
+                  <label style={{ ...styles.checkboxLabel, marginTop: "6px" }}>
+                    Remise maximale
+                    <input
+                      type="number"
+                      min="0"
+                      max="100"
+                      step="1"
+                      value={formData.permissions.max_discount_percent}
+                      onChange={(e) => setPermission("max_discount_percent", e.target.value)}
+                      style={styles.percentInput}
+                    />
+                    % du ticket
+                  </label>
+                </fieldset>
+              )}
+
               <div style={styles.modalActions}>
-                <button type="button" onClick={() => setShowModal(false)} style={styles.cancelBtn}>Annuler</button>
+                <button type="button" onClick={() => setEditing(null)} style={styles.cancelBtn}>Annuler</button>
                 <button type="submit" style={styles.submitBtn} disabled={saving}>
-                  {saving ? "Création..." : "Ajouter"}
+                  {saving ? "Enregistrement..." : isEdit ? "Enregistrer" : "Ajouter"}
                 </button>
               </div>
             </form>
           </div>
         </div>
       )}
+
+      <style>{`
+        @media (max-width: 600px) {
+          .team-page { padding: 20px 16px !important; }
+        }
+      `}</style>
     </div>
   );
 }
@@ -188,31 +371,47 @@ const styles = {
   container: { minHeight: "100vh", backgroundColor: "#f7f5f2", padding: "40px" },
   loadingContainer: { display: "flex", flexDirection: "column", alignItems: "center", justifyContent: "center", minHeight: "100vh", backgroundColor: "#f7f5f2", color: "#1a1410" },
   spinner: { width: "50px", height: "50px", border: "4px solid rgba(0, 0, 0, 0.06)", borderTop: "4px solid #c9a24b", borderRadius: "50%", animation: "spin 1s linear infinite" },
-  header: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: "20px" },
+  header: { display: "flex", justifyContent: "space-between", alignItems: "flex-start", flexWrap: "wrap", gap: "12px", marginBottom: "20px" },
   backBtn: { background: "rgba(0, 0, 0, 0.04)", border: "1px solid #e8e2d8", color: "#6b6155", padding: "10px 20px", borderRadius: "8px", cursor: "pointer", fontSize: "14px", marginBottom: "16px" },
   title: { margin: 0, fontSize: "32px", fontWeight: "700", color: "#1a1410" },
   addBtn: { background: "linear-gradient(135deg, #e0b85c 0%, #c9a24b 100%)", border: "none", color: "#1a1408", padding: "12px 24px", borderRadius: "12px", cursor: "pointer", fontSize: "15px", fontWeight: "700", boxShadow: "0 4px 12px rgba(201, 162, 75, 0.35)" },
   limitBanner: { background: "rgba(245,158,11,0.1)", border: "1px solid rgba(245,158,11,0.3)", color: "#92400e", padding: "12px 18px", borderRadius: "10px", marginBottom: "24px", fontSize: "14px", fontWeight: "500" },
-  grid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(220px, 1fr))", gap: "20px" },
-  card: { background: "#ffffff", borderRadius: "16px", border: "1px solid #e8e2d8", padding: "24px", textAlign: "center" },
+  grid: { display: "grid", gridTemplateColumns: "repeat(auto-fill, minmax(250px, 1fr))", gap: "20px" },
+  card: { background: "#ffffff", borderRadius: "16px", border: "1px solid #e8e2d8", padding: "24px", textAlign: "center", display: "flex", flexDirection: "column" },
+  cardInactive: { opacity: 0.6, background: "#f3f0ea" },
   avatar: { width: "60px", height: "60px", borderRadius: "50%", background: "linear-gradient(135deg, #e0b85c 0%, #c9a24b 100%)", color: "#1a1408", display: "flex", alignItems: "center", justifyContent: "center", fontSize: "24px", fontWeight: "700", margin: "0 auto 12px" },
   cardName: { fontSize: "16px", fontWeight: "700", color: "#1a1410", marginBottom: "4px" },
+  selfTag: { fontWeight: 500, color: "#6b6155", fontSize: "13px" },
   cardEmail: { fontSize: "13px", color: "#6b6155", marginBottom: "12px", wordBreak: "break-all" },
-  roleBadge: { display: "inline-block", padding: "4px 12px", borderRadius: "20px", fontSize: "12px", fontWeight: "700", marginBottom: "14px" },
-  cardActions: { display: "flex", gap: "8px", justifyContent: "center" },
-  deleteBtn: { padding: "8px 16px", background: "rgba(239, 68, 68, 0.1)", border: "1px solid rgba(239, 68, 68, 0.3)", borderRadius: "8px", color: "#dc2626", cursor: "pointer", fontSize: "13px", fontWeight: "600" },
+  badges: { display: "flex", gap: "6px", justifyContent: "center", flexWrap: "wrap", marginBottom: "10px" },
+  badge: { display: "inline-block", padding: "4px 12px", borderRadius: "20px", fontSize: "12px", fontWeight: "700" },
+  badgeInactive: { background: "rgba(220,38,38,0.1)", color: "#dc2626" },
+  badgePin: { background: "rgba(16,185,129,0.1)", color: "#047857" },
+  lastLogin: { fontSize: "12px", color: "#8a8070", marginBottom: "8px" },
+  permSummary: { fontSize: "12px", color: "#3f3a30", background: "#f7f5f2", borderRadius: "8px", padding: "8px", marginBottom: "12px", lineHeight: 1.5 },
+  cardActions: { display: "flex", gap: "8px", justifyContent: "center", flexWrap: "wrap", marginTop: "auto" },
+  editBtn: { padding: "8px 14px", background: "rgba(201,162,75,0.12)", border: "1px solid rgba(201,162,75,0.4)", borderRadius: "8px", color: "#a5822f", cursor: "pointer", fontSize: "13px", fontWeight: "600" },
+  deactivateBtn: { padding: "8px 14px", background: "rgba(0,0,0,0.04)", border: "1px solid #d9d2c4", borderRadius: "8px", color: "#3f3a30", cursor: "pointer", fontSize: "13px", fontWeight: "600" },
+  activateBtn: { padding: "8px 14px", background: "rgba(16,185,129,0.1)", border: "1px solid rgba(16,185,129,0.35)", borderRadius: "8px", color: "#047857", cursor: "pointer", fontSize: "13px", fontWeight: "600" },
+  deleteBtn: { padding: "8px 12px", background: "rgba(239, 68, 68, 0.1)", border: "1px solid rgba(239, 68, 68, 0.3)", borderRadius: "8px", color: "#dc2626", cursor: "pointer", fontSize: "13px", fontWeight: "600" },
   emptyState: { textAlign: "center", padding: "60px 20px", color: "#6b6155" },
   emptyIcon: { fontSize: "48px", marginBottom: "16px" },
-  modalOverlay: { position: "fixed", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(0, 0, 0, 0.8)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 10000, padding: "20px" },
-  modal: { backgroundColor: "#ffffff", borderRadius: "20px", width: "90%", maxWidth: "480px", boxShadow: "0 20px 60px rgba(0, 0, 0, 0.25)" },
-  modalHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "24px", borderBottom: "1px solid #e8e2d8" },
-  modalTitle: { margin: 0, fontSize: "22px", fontWeight: "700", color: "#1a1410" },
+  modalOverlay: { position: "fixed", top: 0, left: 0, right: 0, bottom: 0, backgroundColor: "rgba(0, 0, 0, 0.8)", display: "flex", alignItems: "center", justifyContent: "center", zIndex: 10000, padding: "20px", overflowY: "auto" },
+  modal: { backgroundColor: "#ffffff", borderRadius: "20px", width: "100%", maxWidth: "560px", maxHeight: "92vh", overflowY: "auto", boxShadow: "0 20px 60px rgba(0, 0, 0, 0.25)" },
+  modalHeader: { display: "flex", justifyContent: "space-between", alignItems: "center", padding: "20px 24px", borderBottom: "1px solid #e8e2d8" },
+  modalTitle: { margin: 0, fontSize: "20px", fontWeight: "700", color: "#1a1410" },
   modalCloseBtn: { background: "rgba(0, 0, 0, 0.06)", border: "none", color: "#1a1410", width: "36px", height: "36px", borderRadius: "50%", cursor: "pointer", fontSize: "20px" },
-  form: { padding: "24px" },
-  formGroup: { display: "flex", flexDirection: "column", marginBottom: "20px" },
+  form: { padding: "20px 24px 24px" },
+  formRow: { display: "grid", gridTemplateColumns: "repeat(auto-fit, minmax(200px, 1fr))", gap: "0 14px" },
+  formGroup: { display: "flex", flexDirection: "column", marginBottom: "16px" },
   label: { fontSize: "14px", fontWeight: "600", color: "#1a1410", marginBottom: "8px" },
-  input: { padding: "12px", background: "#f7f5f2", border: "1px solid #e8e2d8", borderRadius: "10px", color: "#1a1410", fontSize: "14px" },
-  modalActions: { display: "flex", gap: "12px", marginTop: "24px" },
+  input: { padding: "12px", background: "#f7f5f2", border: "1px solid #e8e2d8", borderRadius: "10px", color: "#1a1410", fontSize: "14px", minWidth: 0 },
+  hint: { fontSize: "12.5px", color: "#b45309", margin: "-6px 0 12px" },
+  checkboxLabel: { display: "flex", alignItems: "center", gap: "8px", fontSize: "14px", color: "#1a1410", marginBottom: "8px", cursor: "pointer" },
+  permBox: { border: "1px solid #e8e2d8", borderRadius: "12px", padding: "12px 16px 8px", margin: "4px 0 0" },
+  permLegend: { fontSize: "13px", fontWeight: "700", color: "#a5822f", padding: "0 6px" },
+  percentInput: { width: "70px", padding: "6px 8px", border: "1px solid #d9d2c4", borderRadius: "8px", fontSize: "14px", color: "#1a1410", background: "#ffffff" },
+  modalActions: { display: "flex", gap: "12px", marginTop: "20px" },
   cancelBtn: { flex: 1, padding: "14px", background: "rgba(0, 0, 0, 0.04)", border: "1px solid #e8e2d8", borderRadius: "10px", color: "#6b6155", fontSize: "15px", fontWeight: "600", cursor: "pointer" },
   submitBtn: { flex: 2, padding: "14px", background: "linear-gradient(135deg, #e0b85c 0%, #c9a24b 100%)", border: "none", borderRadius: "10px", color: "#1a1408", fontSize: "15px", fontWeight: "700", cursor: "pointer", boxShadow: "0 4px 12px rgba(201, 162, 75, 0.35)" },
 };

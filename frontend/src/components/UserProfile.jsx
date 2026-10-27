@@ -1,8 +1,9 @@
 import { useState, useEffect } from "react";
-import { User, Lock, Eye, EyeOff, Save, X, Gamepad2, Wallet, Edit2 } from "lucide-react";
+import { User, Lock, Eye, EyeOff, Save, X, Gamepad2, Wallet, Edit2, KeyRound } from "lucide-react";
 import api from "../services/api";
 import useSanitize from "../hooks/useSanitize";
 import CashRegister from "./CashRegister";
+import { can } from "../utils/permissions";
 
 function UserProfile({ user, onClose, showToast, onUserUpdated }) {
   const { sanitize } = useSanitize();
@@ -25,6 +26,12 @@ function UserProfile({ user, onClose, showToast, onUserUpdated }) {
   const [showEditPassword, setShowEditPassword] = useState(false);
   const [editError, setEditError] = useState("");
   const [editLoading, setEditLoading] = useState(false);
+
+  // Code PIN caissier (changement rapide de caissier sur la caisse)
+  const [pinValue, setPinValue] = useState("");
+  const [pinPassword, setPinPassword] = useState("");
+  const [pinError, setPinError] = useState("");
+  const [pinLoading, setPinLoading] = useState(false);
 
   const isAdmin = user.role === 'admin';
   const isSuperAdmin = user.role === 'super_admin';
@@ -74,13 +81,14 @@ function UserProfile({ user, onClose, showToast, onUserUpdated }) {
     setLoading(true);
 
     try {
-      await api.post("/change-password", {
+      const res = await api.post("/change-password", {
         current_password: currentPassword,
         new_password: newPassword,
         new_password_confirmation: confirmPassword
       });
 
-      showToast("Mot de passe modifié avec succès", "success");
+      // Le message indique aussi combien d'autres sessions ont été déconnectées
+      showToast(res.data.message || "Mot de passe modifié avec succès", "success");
       setCurrentPassword("");
       setNewPassword("");
       setConfirmPassword("");
@@ -91,6 +99,33 @@ function UserProfile({ user, onClose, showToast, onUserUpdated }) {
       showToast(errorMessage, "error");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const handleSavePin = async (e, remove = false) => {
+    e.preventDefault();
+    setPinError("");
+    if (!pinPassword) {
+      setPinError("Entrez votre mot de passe pour confirmer");
+      return;
+    }
+    if (!remove && !/^\d{4,6}$/.test(pinValue)) {
+      setPinError("Le code PIN doit contenir 4 à 6 chiffres");
+      return;
+    }
+    setPinLoading(true);
+    try {
+      const res = await api.post("/profile/pin", { password: pinPassword, pin: remove ? null : pinValue });
+      const storedUser = JSON.parse(localStorage.getItem("user") || "{}");
+      localStorage.setItem("user", JSON.stringify({ ...storedUser, ...res.data.user }));
+      onUserUpdated?.(res.data.user);
+      showToast(res.data.message, "success");
+      setPinValue("");
+      setPinPassword("");
+    } catch (err) {
+      setPinError(err.response?.data?.message || "Erreur lors de l'enregistrement du PIN");
+    } finally {
+      setPinLoading(false);
     }
   };
 
@@ -362,11 +397,71 @@ function UserProfile({ user, onClose, showToast, onUserUpdated }) {
             </button>
           </div>
         </form>
+
+            {!isSuperAdmin && (
+              <>
+                <div className="divider"></div>
+
+                <form onSubmit={(e) => handleSavePin(e)} className="password-form">
+                  <h3>
+                    <KeyRound size={20} />
+                    Code PIN caisse {user.has_pin ? "(défini)" : "(non défini)"}
+                  </h3>
+                  <p style={{ margin: "0 0 12px", fontSize: "13px", color: "#6b6155" }}>
+                    Sur une caisse partagée, le PIN permet de reprendre la main en 4 à 6 chiffres
+                    (bouton « Changer de caissier » de la Caisse).
+                  </p>
+
+                  {pinError && <div className="error-message">{pinError}</div>}
+
+                  <div className="form-group">
+                    <label htmlFor="pin-value">{user.has_pin ? "Nouveau code PIN" : "Code PIN"}</label>
+                    <input
+                      id="pin-value"
+                      type="password"
+                      inputMode="numeric"
+                      autoComplete="off"
+                      value={pinValue}
+                      onChange={(e) => setPinValue(e.target.value.replace(/\D/g, "").slice(0, 6))}
+                      placeholder="4 à 6 chiffres"
+                    />
+                  </div>
+                  <div className="form-group">
+                    <label htmlFor="pin-password">Mot de passe (pour confirmer)</label>
+                    <input
+                      id="pin-password"
+                      type="password"
+                      value={pinPassword}
+                      onChange={(e) => setPinPassword(e.target.value)}
+                      placeholder="Votre mot de passe actuel"
+                    />
+                  </div>
+
+                  <div className="form-actions">
+                    {user.has_pin && (
+                      <button
+                        type="button"
+                        className="btn btn-secondary"
+                        onClick={(e) => handleSavePin(e, true)}
+                        disabled={pinLoading}
+                      >
+                        Supprimer le PIN
+                      </button>
+                    )}
+                    <button type="submit" className="btn btn-primary" disabled={pinLoading}>
+                      <Save size={18} />
+                      {pinLoading ? "Enregistrement..." : "Enregistrer le PIN"}
+                    </button>
+                  </div>
+                </form>
+              </>
+            )}
           </>
         ) : (
           <div className="cash-register-section">
             <CashRegister
               isAdmin={isAdmin}
+              canWithdraw={can(user, "withdraw_cash")}
               accentColor={isAdmin ? "#f59e0b" : "#10b981"}
             />
           </div>

@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import api from "../services/api";
 import Toast from "../components/Toast";
 import TicketPrint from "../components/TicketPrint";
+import { can } from "../utils/permissions";
 
 const PAYMENT_LABELS = {
   cash: "💵 Espèces",
@@ -10,7 +11,11 @@ const PAYMENT_LABELS = {
   mixed: "🔀 Mixte",
 };
 
-function SalesHistoryPage({ onBack }) {
+// `user` absent (pages admin) = tous les droits ; pour un agent, le serveur ne renvoie que ses tickets
+// s'il n'a pas la permission « voir toutes les ventes ».
+function SalesHistoryPage({ onBack, user }) {
+  const canCancel = !user || can(user, "cancel_sales");
+  const ownSalesOnly = !!user && !can(user, "view_all_sales");
   const [sales, setSales] = useState([]);
   const [total, setTotal] = useState(0);
   const [lastPage, setLastPage] = useState(1);
@@ -138,7 +143,7 @@ function SalesHistoryPage({ onBack }) {
       <div style={styles.header}>
         <div>
           <button onClick={onBack} style={styles.backBtn}>← Retour</button>
-          <h1 style={styles.title}>Historique des Ventes</h1>
+          <h1 style={styles.title}>{ownSalesOnly ? "Mes ventes" : "Historique des Ventes"}</h1>
         </div>
       </div>
 
@@ -228,7 +233,7 @@ function SalesHistoryPage({ onBack }) {
                     <td style={styles.td}>
                       <div style={styles.actionsCell}>
                         <button onClick={() => setReprintSale(sale)} style={styles.reprintBtn}>🖨️ Réimprimer</button>
-                        {!isCancelled && (
+                        {!isCancelled && canCancel && (
                           <button onClick={() => setCancelTarget(sale)} style={styles.cancelBtn}>✕ Annuler</button>
                         )}
                       </div>

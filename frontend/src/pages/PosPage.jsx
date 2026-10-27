@@ -1,8 +1,11 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import { ArrowLeft, Clock, Delete, Maximize, Minimize, Minus, Plus, Search, ShoppingCart, Trash2, X } from "lucide-react";
+import { ArrowLeft, Clock, Delete, Maximize, Minimize, Minus, Plus, Receipt, Search, ShoppingCart, Trash2, UserCog, X } from "lucide-react";
 import api from "../services/api";
 import TicketPrint from "../components/TicketPrint";
 import Toast from "../components/Toast";
+import PosTicketsPanel from "../components/PosTicketsPanel";
+import SwitchCashierModal from "../components/SwitchCashierModal";
+import { permissionsOf } from "../utils/permissions";
 
 // Écran de caisse plein écran (POS) : catalogue à gauche, panier + encaissement à droite.
 // Raccourcis : F2 recherche, F9 encaisser, Échap vider la recherche.
@@ -32,6 +35,7 @@ function readAutoPrint() {
 
 function PosPage({ user, onBack }) {
   const modules = user?.modules || { gaming: true, coiffure: true, stock: true };
+  const perms = permissionsOf(user);
 
   const [services, setServices] = useState([]);
   const [products, setProducts] = useState([]);
@@ -60,6 +64,9 @@ function PosPage({ user, onBack }) {
   const [toast, setToast] = useState(null);
   const [now, setNow] = useState(() => new Date());
   const [isFullscreen, setIsFullscreen] = useState(() => !!document.fullscreenElement);
+  const [showTickets, setShowTickets] = useState(false);
+  const [showSwitch, setShowSwitch] = useState(false);
+  const [salesVersion, setSalesVersion] = useState(0); // recharge « Mes ventes » après chaque vente
 
   const searchRef = useRef(null);
   const checkoutRef = useRef(null);
@@ -204,7 +211,11 @@ function PosPage({ user, onBack }) {
   const availableCredit = selectedCustomer
     ? Math.max(0, parseFloat(selectedCustomer.credit_limit) - parseFloat(selectedCustomer.credit_balance))
     : 0;
-  const canPayOnCredit = !!selectedCustomer && parseFloat(selectedCustomer.credit_limit) > 0;
+  const canPayOnCredit = perms.sell_on_credit && !!selectedCustomer && parseFloat(selectedCustomer.credit_limit) > 0;
+  // Plafond de remise de l'agent (le serveur applique la même règle)
+  const maxDiscountPercent = Number(perms.max_discount_percent ?? 100);
+  const maxDiscount = round2((subtotal * maxDiscountPercent) / 100);
+  const discountTooHigh = discountValue > maxDiscount;
   const creditExceeded = payOnCredit && total > availableCredit;
 
   // Paiement mixte : carte et mobile saisis, le reste est dû en espèces
@@ -227,7 +238,7 @@ function PosPage({ user, onBack }) {
   const insufficientCash = isCash && hasReceived && receivedValue < cashDue;
   const registerClosed = !!register && !register.is_open;
   const checkoutDisabled =
-    submitting || itemCount === 0 || creditExceeded || insufficientCash || mixedOver || registerClosed;
+    submitting || itemCount === 0 || creditExceeded || insufficientCash || mixedOver || registerClosed || discountTooHigh;
 
   const resetSale = () => {
     setCart({});
@@ -259,6 +270,7 @@ function PosPage({ user, onBack }) {
     if (checkoutDisabled) {
       if (registerClosed) setError("La caisse du jour est clôturée : aucune vente n'est possible.");
       else if (itemCount === 0) setError("Le panier est vide.");
+      else if (discountTooHigh) setError(`Remise trop élevée : maximum ${maxDiscountPercent} % (${fmt(maxDiscount)}).`);
       else if (mixedOver) setError("Les montants carte + mobile dépassent le total.");
       else if (insufficientCash) setError("Montant reçu insuffisant.");
       else if (creditExceeded) setError(`Crédit insuffisant pour ce client. Disponible : ${fmt(availableCredit)}.`);
@@ -334,7 +346,7 @@ function PosPage({ user, onBack }) {
   useEffect(() => {
     const isEditable = (el) => el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable);
     const onKeyDown = (event) => {
-      if (completed) return;
+      if (completed || showTickets || showSwitch) return;
       if (!isEditable(event.target) && !event.ctrlKey && !event.altKey && !event.metaKey) {
         const buf = scanBuffer.current;
         const t = Date.now();
@@ -362,7 +374,7 @@ function PosPage({ user, onBack }) {
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [completed]);
+  }, [completed, showTickets, showSwitch]);
 
   const onSearchKeyDown = (event) => {
     if (event.key !== "Enter") return;
@@ -401,6 +413,7 @@ function PosPage({ user, onBack }) {
   const finishSale = () => {
     setCompleted(null);
     resetSale();
+    setSalesVersion((v) => v + 1);
     loadCatalog(); // stock mis à jour
     setTimeout(() => searchRef.current?.focus(), 0);
   };
@@ -409,6 +422,9 @@ function PosPage({ user, onBack }) {
   return (
     <div style={styles.page} className="pos-page">
       {toast && <Toast message={toast.message} type={toast.type} onClose={closeToast} />}
+
+      {showTickets && <PosTicketsPanel onClose={() => setShowTickets(false)} refreshKey={salesVersion} />}
+      {showSwitch && <SwitchCashierModal currentUserId={user?.id} onClose={() => setShowSwitch(false)} />}
 
       {completed && (
         <TicketPrint
@@ -444,6 +460,12 @@ function PosPage({ user, onBack }) {
             </span>
           )}
           <span style={styles.userName} className="pos-hide-sm">{user?.name}</span>
+          <button onClick={() => setShowTickets(true)} style={styles.iconBtn} aria-label="Mes tickets du jour" title="Mes tickets du jour">
+            <Receipt size={18} />
+          </button>
+          <button onClick={() => setShowSwitch(true)} style={styles.iconBtn} aria-label="Changer de caissier" title="Changer de caissier">
+            <UserCog size={18} />
+          </button>
           <button onClick={toggleFullscreen} style={styles.iconBtn} aria-label="Plein écran" title="Plein écran">
             {isFullscreen ? <Minimize size={18} /> : <Maximize size={18} />}
           </button>
@@ -615,7 +637,9 @@ function PosPage({ user, onBack }) {
                 <span>{fmt(subtotal)}</span>
               </div>
               <div style={styles.totalsLine}>
-                <span>Remise (DH)</span>
+                <span style={discountTooHigh ? { color: "#b91c1c", fontWeight: 700 } : undefined}>
+                  Remise (DH){maxDiscountPercent < 100 && ` · max ${maxDiscountPercent} %`}
+                </span>
                 <input
                   type="number"
                   min="0"

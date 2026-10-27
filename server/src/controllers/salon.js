@@ -8,6 +8,8 @@ import { orgScope, withOrg } from '../lib/org.js';
 import { slug } from '../lib/misc.js';
 import { dateBetween, dayRange, toDateString, today } from '../lib/dates.js';
 import { MOVABLE, MOVEMENT, logMovement } from '../lib/stock.js';
+import { can, permissionsOf } from '../lib/permissions.js';
+import { ACTIVITY, logActivity } from '../lib/activity.js';
 
 const byId = (model, name) => async (req, id = req.params.id) =>
   orFail(await prisma[model].findFirst({ where: orgScope(req, { id: Number(id) }) }), name, id);
@@ -390,6 +392,9 @@ export async function salesStore(req, res) {
   });
 
   const paidOnCredit = bool(data.paid_on_credit);
+  if (paidOnCredit && !can(req.user, 'sell_on_credit')) {
+    return res.status(403).json({ message: "Vous n'êtes pas autorisé(e) à vendre à crédit." });
+  }
   let customer = null;
   if (paidOnCredit) {
     if (!data.customer_id) {
@@ -465,6 +470,12 @@ export async function salesStore(req, res) {
       subtotal = round2(subtotal);
 
       const discount = Number(data.discount ?? 0);
+      // Plafond de remise de l'agent (en % du sous-total)
+      const maxPercent = permissionsOf(req.user).max_discount_percent;
+      const maxDiscount = round2((subtotal * maxPercent) / 100);
+      if (discount > maxDiscount) {
+        abort(403, `Remise trop élevée : votre maximum est de ${maxPercent} % (${maxDiscount} DH sur ce ticket).`);
+      }
       const afterDiscount = Math.max(0, round2(subtotal - discount));
       const organization = req.user.organization_id
         ? await tx.organization.findUnique({ where: { id: req.user.organization_id } })
@@ -565,6 +576,14 @@ export async function salesStore(req, res) {
       return tx.sale.findUnique({ where: { id: created.id }, include: SALE_INCLUDE });
     });
 
+    if (Number(sale.discount) > 0) {
+      const pct = Number(sale.subtotal) > 0 ? round2((Number(sale.discount) / Number(sale.subtotal)) * 100) : 0;
+      await logActivity(
+        req.user,
+        ACTIVITY.SALE_DISCOUNT,
+        `${req.user.name} a accordé une remise de ${Number(sale.discount)} DH (${pct} %) sur le ticket ${sale.ticket_number}`,
+      );
+    }
     res.status(201).json({ message: 'Vente enregistrée avec succès', sale });
   } catch (err) {
     if (err instanceof HttpError) throw err;
@@ -576,6 +595,9 @@ function saleFilters(req, data) {
   const where = orgScope(req);
   if (filled(data, 'coiffeur_id')) where.coiffeur_id = Number(data.coiffeur_id);
   if (filled(data, 'payment_method')) where.payment_method = data.payment_method;
+  // Sans la permission « voir toutes les ventes » (ou avec mine=1), uniquement ses propres tickets
+  if (!can(req.user, 'view_all_sales') || bool(data.mine)) where.staff_id = req.user.id;
+  else if (filled(data, 'staff_id')) where.staff_id = Number(data.staff_id);
   return where;
 }
 
@@ -607,8 +629,50 @@ export async function salesIndex(req, res) {
 }
 
 export async function salesShow(req, res) {
-  const sale = await prisma.sale.findFirst({ where: orgScope(req, { id: Number(req.params.id) }), include: SALE_INCLUDE });
+  const where = orgScope(req, { id: Number(req.params.id) });
+  if (!can(req.user, 'view_all_sales')) where.staff_id = req.user.id;
+  const sale = await prisma.sale.findFirst({ where, include: SALE_INCLUDE });
   res.json(orFail(sale, 'Sale', req.params.id));
+}
+
+/** Résumé des ventes de l'utilisateur connecté pour une journée (« Mes ventes du jour »). */
+export async function salesMySummary(req, res) {
+  const data = input(req);
+  const date = data.date ?? toDateString(new Date());
+  const range = dayRange(date);
+
+  const [sales, payments] = await Promise.all([
+    prisma.sale.findMany({
+      where: orgScope(req, { staff_id: req.user.id, sale_date: range }),
+      select: { total: true, discount: true, paid_cash: true, paid_card: true, paid_mobile: true, paid_on_credit: true, cancelled_at: true },
+    }),
+    prisma.payment.findMany({
+      where: orgScope(req, { staff_id: req.user.id, payment_date: range }),
+      select: { amount: true, payment_method: true },
+    }),
+  ]);
+
+  const active = sales.filter((s) => !s.cancelled_at);
+  const total = (rows, fn) => round2(rows.reduce((acc, r) => acc + Number(fn(r) ?? 0), 0));
+  const revenue = total(active, (s) => s.total);
+  const gaming = { cash: 0, card: 0, mobile: 0 };
+  for (const p of payments) if (p.payment_method in gaming) gaming[p.payment_method] = round2(gaming[p.payment_method] + Number(p.amount));
+
+  res.json({
+    date,
+    tickets: active.length,
+    revenue,
+    average: active.length ? round2(revenue / active.length) : 0,
+    discount: total(active, (s) => s.discount),
+    cancelled: sales.length - active.length,
+    by_method: {
+      cash: total(active, (s) => s.paid_cash),
+      card: total(active, (s) => s.paid_card),
+      mobile: total(active, (s) => s.paid_mobile),
+      credit: total(active.filter((s) => s.paid_on_credit), (s) => s.total),
+    },
+    gaming: { sessions_paid: payments.length, revenue: total(payments, (p) => p.amount), by_method: gaming },
+  });
 }
 
 /** Annule un ticket et restitue le stock consommé. */
@@ -676,6 +740,12 @@ export async function salesCancel(req, res) {
     });
 
     // La relation Eloquent "cancelledBy" était sérialisée sous la clé cancelled_by
+    await logActivity(
+      req.user,
+      ACTIVITY.SALE_CANCEL,
+      `${req.user.name} a annulé le ticket ${sale.ticket_number} (${Number(sale.total)} DH)${reason ? ` : ${reason}` : ''}`,
+    );
+
     const { cancelled_by_user: cancelledBy, ...rest } = fresh;
     res.json({ message: 'Ticket annulé et stock restitué avec succès', sale: { ...rest, cancelled_by: cancelledBy } });
   } catch (err) {

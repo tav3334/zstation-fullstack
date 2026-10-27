@@ -15,7 +15,9 @@ import {
   Play,
   Square,
   Scissors,
-  ShoppingCart
+  ShoppingCart,
+  History,
+  Package
 } from "lucide-react";
 import api from "../services/api";
 import SubscriptionBanner from "../components/SubscriptionBanner";
@@ -26,6 +28,11 @@ import StatsCard from "../components/StatsCard";
 import Toast from "../components/Toast";
 import SaleModal from "../components/SaleModal";
 import PosPage from "./PosPage";
+import SalesHistoryPage from "./SalesHistoryPage";
+import SalonStockManagement from "./SalonStockManagement";
+import MySalesSummary from "../components/MySalesSummary";
+import { can } from "../utils/permissions";
+import { clearReopenPos, shouldReopenPos } from "../utils/session";
 import UserProfile from "../components/UserProfile";
 import MatchCountModal from "../components/MatchCountModal";
 
@@ -38,12 +45,19 @@ function Dashboard({ user, onLogout, onUserUpdated }) {
   const [paymentSessions, setPaymentSessions] = useState([]);
   const [activeTab, setActiveTab] = useState('machines');
   const [showSale, setShowSale] = useState(false);
-  const [showPos, setShowPos] = useState(false);
+  const [showPos, setShowPos] = useState(shouldReopenPos);
+  const [showHistory, setShowHistory] = useState(false);
+  const [showStock, setShowStock] = useState(false);
   const [showProfile, setShowProfile] = useState(false);
   const [toast, setToast] = useState(null);
   const [matchCountSession, setMatchCountSession] = useState(null);
   const [sidebarCollapsed, setSidebarCollapsed] = useState(false);
   const [currentTime, setCurrentTime] = useState(new Date());
+
+  // Drapeau « rouvrir la caisse » posé par un changement de caissier : à usage unique
+  useEffect(() => {
+    clearReopenPos();
+  }, []);
 
   // Helper pour afficher un toast
   const showToast = useCallback((message, type = "info", duration = 3000) => {
@@ -243,9 +257,19 @@ function Dashboard({ user, onLogout, onUserUpdated }) {
     modules.gaming && { id: 'machines', label: 'Machines', icon: Monitor, count: machines.length },
     { id: 'pos', label: 'Caisse', icon: ShoppingCart },
     { id: 'sale', label: 'Vente', icon: Scissors },
+    { id: 'history', label: can(user, 'view_all_sales') ? 'Ventes' : 'Mes ventes', icon: History },
+    modules.stock && can(user, 'access_stock') && { id: 'stock', label: 'Stock', icon: Package },
     { id: 'stats', label: 'Statistiques', icon: BarChart3 },
     { id: 'profile', label: 'Mon Profil', icon: User },
   ].filter(Boolean);
+
+  if (showHistory) {
+    return <SalesHistoryPage onBack={() => setShowHistory(false)} user={user} />;
+  }
+
+  if (showStock) {
+    return <SalonStockManagement onBack={() => setShowStock(false)} />;
+  }
 
   if (showPos) {
     return <PosPage user={user} onBack={() => setShowPos(false)} />;
@@ -299,6 +323,10 @@ function Dashboard({ user, onLogout, onUserUpdated }) {
               onClick={() => {
                 if (item.id === 'sale') {
                   setShowSale(true);
+                } else if (item.id === 'history') {
+                  setShowHistory(true);
+                } else if (item.id === 'stock') {
+                  setShowStock(true);
                 } else if (item.id === 'pos') {
                   setShowPos(true);
                 } else if (item.id === 'profile') {
@@ -406,16 +434,28 @@ function Dashboard({ user, onLogout, onUserUpdated }) {
         <main className="z-content" style={styles.content}>
           <SubscriptionBanner organizationId={user?.organization_id} />
           {activeTab === 'stats' ? (
-            <div style={styles.dashboardCard}>
-              <div style={styles.cardHeader}>
-                <h3 style={styles.cardTitle}>
-                  <BarChart3 size={18} /> Statistiques de vente
-                </h3>
+            <>
+              <div style={{ ...styles.dashboardCard, marginBottom: '20px' }}>
+                <div style={styles.cardHeader}>
+                  <h3 style={styles.cardTitle}>
+                    <User size={18} /> Mes ventes du jour
+                  </h3>
+                </div>
+                <div style={styles.cardBody}>
+                  <MySalesSummary />
+                </div>
               </div>
-              <div style={styles.cardBody}>
-                <StatsCard />
+              <div style={styles.dashboardCard}>
+                <div style={styles.cardHeader}>
+                  <h3 style={styles.cardTitle}>
+                    <BarChart3 size={18} /> Statistiques de vente
+                  </h3>
+                </div>
+                <div style={styles.cardBody}>
+                  <StatsCard />
+                </div>
               </div>
-            </div>
+            </>
           ) : (
             <>
               {machines.length === 0 ? (
@@ -508,6 +548,10 @@ function Dashboard({ user, onLogout, onUserUpdated }) {
                 setShowProducts(true);
               } else if (item.id === 'sale') {
                 setShowSale(true);
+              } else if (item.id === 'history') {
+                setShowHistory(true);
+              } else if (item.id === 'stock') {
+                setShowStock(true);
               } else if (item.id === 'pos') {
                 setShowPos(true);
               } else if (item.id === 'profile') {

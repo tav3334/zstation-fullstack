@@ -34,6 +34,23 @@ export async function createToken(userId, name = 'auth-token') {
   return `${row.id}|${secret}`;
 }
 
+/** Déconnecte toutes les sessions d'un utilisateur, sauf éventuellement le token `exceptTokenId`. */
+export function revokeTokens(userId, exceptTokenId = null) {
+  return prisma.personalAccessToken.deleteMany({
+    where: {
+      tokenable_type: USER_TYPE,
+      tokenable_id: userId,
+      ...(exceptTokenId ? { NOT: { id: exceptTokenId } } : {}),
+    },
+  });
+}
+
+/** Hash du code PIN caissier (omis par défaut dans toutes les requêtes). */
+export async function pinHashOf(userId) {
+  const row = await prisma.user.findUnique({ where: { id: userId }, select: { pin_hash: true } });
+  return row?.pin_hash ?? null;
+}
+
 async function findToken(bearer) {
   if (bearer.includes('|')) {
     const [id, secret] = bearer.split('|', 2);
@@ -60,6 +77,10 @@ export async function authenticate(req, res, next) {
 
   const user = await prisma.user.findUnique({ where: { id: token.tokenable_id } });
   if (!user) return res.status(401).json({ message: 'Unauthenticated.' });
+  if (!user.is_active) {
+    await prisma.personalAccessToken.delete({ where: { id: token.id } }).catch(() => {});
+    return res.status(401).json({ message: 'Ce compte est désactivé.' });
+  }
 
   req.user = user;
   req.accessTokenId = token.id;

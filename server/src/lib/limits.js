@@ -18,7 +18,7 @@ export async function checkLimit(organizationId, limitKey) {
   if (limitKey === 'max_machines') current = await prisma.machine.count({ where: { organization_id: orgId } });
   else if (limitKey === 'max_games') current = await prisma.game.count({ where: { organization_id: orgId } });
   else if (limitKey === 'max_users') {
-    current = await prisma.user.count({ where: { organization_id: orgId, role: { in: ['admin', 'agent'] } } });
+    current = await prisma.user.count({ where: { organization_id: orgId, role: { in: ['admin', 'agent'] }, is_active: true } });
   }
 
   if (current >= max) {

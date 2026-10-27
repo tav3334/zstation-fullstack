@@ -5,6 +5,7 @@ import { validate } from '../lib/validate.js';
 import { orgScope } from '../lib/org.js';
 import { isSuperAdmin } from '../lib/auth.js';
 import { dayRange, formatDate, formatTime, toDateString, today } from '../lib/dates.js';
+import { ACTIVITY, logActivity } from '../lib/activity.js';
 
 const sum = (rows, fn) => rows.reduce((acc, row) => acc + Number(fn(row) ?? 0), 0);
 
@@ -156,6 +157,7 @@ export async function setOpeningBalance(req, res) {
   }
 
   await syncWithPayments(req, register);
+  await logActivity(req.user, ACTIVITY.REGISTER_OPENING, `${req.user.name} a fixé le fond de caisse à ${Number(data.amount)} DH`);
   res.json({ message: 'Fond de caisse mis à jour', register: await formatRegister(req, register.id) });
 }
 
@@ -179,6 +181,11 @@ export async function withdraw(req, res) {
     update.notes = `${register.notes ? `${register.notes}\n` : ''}${formatTime(new Date())} - Retrait: ${data.amount} DH (${data.notes})`;
   }
   await prisma.cashRegister.update({ where: { id: register.id }, data: update });
+  await logActivity(
+    req.user,
+    ACTIVITY.REGISTER_WITHDRAW,
+    `${req.user.name} a retiré ${amount} DH de la caisse${data.notes ? ` (${data.notes})` : ''}`,
+  );
 
   res.json({ message: `Retrait de ${data.amount} DH effectué`, register: await formatRegister(req, register.id) });
 }
@@ -202,12 +209,18 @@ export async function closeRegister(req, res) {
   register = await prisma.cashRegister.update({ where: { id: register.id }, data: update });
 
   const expected = currentBalance(register);
+  const difference = round2(Number(data.closing_balance) - expected);
+  await logActivity(
+    req.user,
+    ACTIVITY.REGISTER_CLOSE,
+    `${req.user.name} a clôturé la caisse : ${Number(data.closing_balance)} DH comptés, écart ${difference} DH`,
+  );
   res.json({
     message: 'Caisse fermée',
     register: await formatRegister(req, register.id),
     expected_balance: expected,
     actual_balance: data.closing_balance,
-    difference: round2(Number(data.closing_balance) - expected),
+    difference,
   });
 }
 
