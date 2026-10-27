@@ -56,7 +56,10 @@ export async function stats(req, res) {
     prisma.productSale.findMany({ where: legacyWhere, include: { product: { select: { name: true, size: true, category: true } } } }),
     prisma.saleProduct.findMany({
       where: saleWhere,
-      include: { sale: { select: { payment_method: true } }, stock_product: { select: { category: true } } },
+      include: {
+        sale: { select: { payment_method: true, total: true, paid_cash: true, paid_card: true, paid_mobile: true } },
+        stock_product: { select: { category: true } },
+      },
     }),
     prisma.saleService.findMany({ where: saleWhere }),
     prisma.gameSession.findMany({
@@ -132,7 +135,14 @@ export async function stats(req, res) {
   const productByMethod = groupSum(
     [
       ...legacySales.map((s) => ({ method: s.payment_method, total: Number(s.total_price) })),
-      ...productLines.map((l) => ({ method: l.sale.payment_method, total: lineTotal(l) })),
+      ...productLines.flatMap((l) => {
+        if (l.sale.payment_method !== 'mixed') return [{ method: l.sale.payment_method, total: lineTotal(l) }];
+        // Paiement mixte : la ligne est répartie au prorata de chaque moyen de paiement
+        const saleTotal = Number(l.sale.total) || 1;
+        return ['cash', 'card', 'mobile']
+          .filter((method) => Number(l.sale[`paid_${method}`]) > 0)
+          .map((method) => ({ method, total: (lineTotal(l) * Number(l.sale[`paid_${method}`])) / saleTotal }));
+      }),
     ],
     (r) => r.method,
     (r) => r.total,

@@ -7,6 +7,7 @@ const PAYMENT_LABELS = {
   cash: "💵 Espèces",
   card: "💳 Carte",
   mobile: "📱 Mobile",
+  mixed: "🔀 Mixte",
 };
 
 function SalesHistoryPage({ onBack }) {

@@ -6,7 +6,7 @@ import { HttpError, abort, bool, filled, has, input, orFail, pick, round2 } from
 import { validate } from '../lib/validate.js';
 import { orgScope, withOrg } from '../lib/org.js';
 import { slug } from '../lib/misc.js';
-import { dateBetween, dayRange, toDateString } from '../lib/dates.js';
+import { dateBetween, dayRange, toDateString, today } from '../lib/dates.js';
 import { MOVABLE, MOVEMENT, logMovement } from '../lib/stock.js';
 
 const byId = (model, name) => async (req, id = req.params.id) =>
@@ -249,11 +249,25 @@ const STOCK_RULES = {
   alert_threshold: 'nullable|numeric|min:0',
   is_sellable: 'boolean',
   sale_price: 'nullable|numeric|min:0',
+  barcode: 'nullable|string|max:64',
 };
+
+/** Code-barres normalisé (vide → null) ; refuse un doublon dans l'organisation. */
+async function checkBarcode(req, value, exceptId = null) {
+  const barcode = value != null && String(value).trim() !== '' ? String(value).trim() : null;
+  if (barcode) {
+    const taken = await prisma.stockProduct.findFirst({
+      where: orgScope(req, { barcode, ...(exceptId ? { NOT: { id: exceptId } } : {}) }),
+    });
+    if (taken) abort(422, `Ce code-barres est déjà utilisé par « ${taken.name} ».`);
+  }
+  return barcode;
+}
 
 export async function stockStore(req, res) {
   const data = input(req);
   await validate(data, { name: 'required|string|max:255', quantity: 'required|numeric|min:0', ...STOCK_RULES });
+  const barcode = await checkBarcode(req, data.barcode);
 
   const product = await prisma.stockProduct.create({
     data: withOrg(req, {
@@ -267,6 +281,7 @@ export async function stockStore(req, res) {
       alert_threshold: data.alert_threshold != null ? Number(data.alert_threshold) : 5,
       is_sellable: bool(data.is_sellable),
       sale_price: data.sale_price != null ? Number(data.sale_price) : null,
+      barcode,
     }),
   });
 
@@ -296,6 +311,7 @@ export async function stockUpdate(req, res) {
   if (has(data, 'quantity')) changes.quantity = Number(data.quantity);
   if (has(data, 'is_sellable')) changes.is_sellable = bool(data.is_sellable);
   if (has(data, 'sale_price')) changes.sale_price = data.sale_price != null ? Number(data.sale_price) : null;
+  if (has(data, 'barcode')) changes.barcode = await checkBarcode(req, data.barcode, product.id);
 
   const updated = await prisma.stockProduct.update({ where: { id: product.id }, data: changes });
   res.json({ message: 'Produit mis à jour avec succès', product: updated });
@@ -360,7 +376,10 @@ export async function salesStore(req, res) {
     coiffeur_id: 'nullable|exists:coiffeurs,id',
     customer_id: 'nullable|exists:customers,id',
     discount: 'nullable|numeric|min:0',
-    payment_method: 'required|in:cash,card,mobile',
+    payment_method: 'required|in:cash,card,mobile,mixed',
+    payments: 'nullable|array',
+    'payments.*.method': 'required|in:cash,card,mobile',
+    'payments.*.amount': 'required|numeric|min:0',
     paid_on_credit: 'boolean',
     services: 'required_without:products|array',
     'services.*.service_id': 'required|exists:services,id',
@@ -387,6 +406,15 @@ export async function salesStore(req, res) {
   const products = Array.isArray(data.products) ? data.products : [];
   if (!services.length && !products.length) {
     return res.status(422).json({ message: 'La vente doit contenir au moins une prestation ou un produit' });
+  }
+  if (!paidOnCredit && data.payment_method === 'mixed' && !(Array.isArray(data.payments) && data.payments.length)) {
+    return res.status(422).json({ message: 'Le détail des paiements est requis pour un paiement mixte.' });
+  }
+
+  // Pas de vente sur une caisse déjà clôturée pour la journée
+  const register = await prisma.cashRegister.findFirst({ where: orgScope(req, { date: today() }), orderBy: { id: 'asc' } });
+  if (register?.closed_at) {
+    return res.status(400).json({ message: "La caisse du jour est clôturée : aucune vente n'est possible." });
   }
 
   try {
@@ -451,6 +479,20 @@ export async function salesStore(req, res) {
         if (total > available) abort(400, `Crédit insuffisant pour ce client. Disponible : ${available} DH.`);
       }
 
+      // Répartition de l'encaissement (rien n'est encaissé pour une vente à crédit)
+      const paid = { cash: 0, card: 0, mobile: 0 };
+      if (!paidOnCredit) {
+        if (data.payment_method === 'mixed') {
+          for (const p of data.payments) paid[p.method] = round2(paid[p.method] + Number(p.amount));
+          const paidTotal = round2(paid.cash + paid.card + paid.mobile);
+          if (paidTotal !== total) {
+            abort(422, `La somme des paiements (${paidTotal} DH) ne correspond pas au total (${total} DH).`);
+          }
+        } else {
+          paid[data.payment_method] = total;
+        }
+      }
+
       // 4. Création du ticket et de ses lignes
       const created = await tx.sale.create({
         data: withOrg(req, {
@@ -464,6 +506,9 @@ export async function salesStore(req, res) {
           tax_amount: taxAmount,
           total,
           payment_method: data.payment_method,
+          paid_cash: paid.cash,
+          paid_card: paid.card,
+          paid_mobile: paid.mobile,
           paid_on_credit: paidOnCredit,
           sale_date: new Date(),
           services: {

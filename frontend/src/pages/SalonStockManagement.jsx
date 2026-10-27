@@ -23,6 +23,7 @@ function SalonStockManagement({ onBack }) {
     alert_threshold: "3",
     is_sellable: false,
     sale_price: "",
+    barcode: "",
   };
   const [formData, setFormData] = useState(emptyForm);
 
@@ -75,6 +76,7 @@ function SalonStockManagement({ onBack }) {
       alert_threshold: product.alert_threshold,
       is_sellable: product.is_sellable,
       sale_price: product.sale_price || "",
+      barcode: product.barcode || "",
     });
     setShowModal(true);
   };
@@ -294,6 +296,22 @@ function SalonStockManagement({ onBack }) {
                 <div style={styles.formGroup}>
                   <label style={styles.label}>Prix de vente (DH)</label>
                   <input type="number" step="0.01" value={formData.sale_price} onChange={(e) => setFormData({ ...formData, sale_price: e.target.value })} style={styles.input} required={formData.is_sellable} />
+                </div>
+              )}
+
+              {formData.is_sellable && (
+                <div style={styles.formGroup}>
+                  <label style={styles.label}>Code-barres (optionnel)</label>
+                  <input
+                    type="text"
+                    value={formData.barcode}
+                    onChange={(e) => setFormData({ ...formData, barcode: e.target.value })}
+                    // Le lecteur envoie « Entrée » après le code : ne pas valider le formulaire
+                    onKeyDown={(e) => e.key === "Enter" && e.preventDefault()}
+                    style={styles.input}
+                    placeholder="Scannez ou saisissez le code"
+                    maxLength={64}
+                  />
                 </div>
               )}
 

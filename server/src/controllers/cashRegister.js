@@ -27,15 +27,16 @@ async function syncWithPayments(req, register) {
     where: orgScope(req, { sale_date: range, payment_method: 'cash' }),
     _sum: { total_price: true },
   });
+  // Part réellement encaissée en espèces (paiements mixtes inclus, ventes à crédit exclues)
   const salesCash = await prisma.sale.aggregate({
-    where: orgScope(req, { sale_date: range, payment_method: 'cash', cancelled_at: null }),
-    _sum: { total: true },
+    where: orgScope(req, { sale_date: range, cancelled_at: null }),
+    _sum: { paid_cash: true },
   });
 
   const totalCashIn =
     sum(payments, (p) => p.amount_given) +
     Number(legacyProductsCash._sum.total_price ?? 0) +
-    Number(salesCash._sum.total ?? 0);
+    Number(salesCash._sum.paid_cash ?? 0);
 
   return prisma.cashRegister.update({
     where: { id: register.id },
@@ -56,7 +57,11 @@ async function paymentBreakdown(req, date) {
     if (method in breakdown) breakdown[method] = round2(breakdown[method] + amount);
   };
   for (const p of payments) add(p.payment_method, Number(p.amount_given ?? 0) - Number(p.change_given));
-  for (const s of sales) add(s.payment_method, Number(s.total));
+  for (const s of sales) {
+    add('cash', Number(s.paid_cash));
+    add('card', Number(s.paid_card));
+    add('mobile', Number(s.paid_mobile));
+  }
   for (const l of legacy) add(l.payment_method, Number(l.total_price));
 
   breakdown.total = round2(breakdown.cash + breakdown.card + breakdown.mobile);

@@ -5,6 +5,7 @@ const PAYMENT_LABELS = {
   cash: "Espèces",
   card: "Carte Bancaire",
   mobile: "Mobile",
+  mixed: "Mixte",
 };
 
 function TicketPrint({ sale, onClose, onNewSale, cashReceived = null, change = null, autoPrint = false }) {
@@ -136,6 +137,15 @@ function TicketPrint({ sale, onClose, onNewSale, cashReceived = null, change = n
           <span>Paiement:</span>
           <span>{PAYMENT_LABELS[sale.payment_method] || sale.payment_method}</span>
         </div>
+        {sale.payment_method === "mixed" &&
+          ["cash", "card", "mobile"].map((method) =>
+            parseFloat(sale[`paid_${method}`] || 0) > 0 ? (
+              <div key={method} style={styles.metaRow}>
+                <span>&nbsp;&nbsp;{PAYMENT_LABELS[method]}:</span>
+                <span>{parseFloat(sale[`paid_${method}`]).toFixed(2)} DH</span>
+              </div>
+            ) : null
+          )}
         {cashReceived !== null && (
           <>
             <div style={styles.metaRow}>

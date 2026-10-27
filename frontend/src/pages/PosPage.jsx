@@ -6,9 +6,17 @@ import Toast from "../components/Toast";
 
 // Écran de caisse plein écran (POS) : catalogue à gauche, panier + encaissement à droite.
 // Raccourcis : F2 recherche, F9 encaisser, Échap vider la recherche.
+// Lecteur de codes-barres : il « tape » le code puis Entrée, dans la recherche ou n'importe où sur la page.
 
 const QUICK_BILLS = [20, 50, 100, 200];
 const AUTO_PRINT_KEY = "pos_auto_print";
+const SCAN_MAX_GAP_MS = 60; // un lecteur tape bien plus vite qu'un humain
+const PAYMENT_METHODS = [
+  { id: "cash", label: "Espèces" },
+  { id: "card", label: "Carte" },
+  { id: "mobile", label: "Mobile" },
+  { id: "mixed", label: "Mixte" },
+];
 
 const round2 = (n) => Math.round(n * 100) / 100;
 const fmt = (n) => `${round2(n).toFixed(2)} DH`;
@@ -31,6 +39,7 @@ function PosPage({ user, onBack }) {
   const [customers, setCustomers] = useState([]);
   const [categoryLabels, setCategoryLabels] = useState({});
   const [organization, setOrganization] = useState(null);
+  const [register, setRegister] = useState(null);
   const [dataLoading, setDataLoading] = useState(true);
 
   const [cart, setCart] = useState({}); // { "s-12" | "p-7": quantité }
@@ -42,6 +51,8 @@ function PosPage({ user, onBack }) {
   const [discount, setDiscount] = useState("");
   const [paymentMethod, setPaymentMethod] = useState("cash");
   const [received, setReceived] = useState("");
+  const [cardPart, setCardPart] = useState(""); // paiement mixte
+  const [mobilePart, setMobilePart] = useState("");
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState("");
   const [completed, setCompleted] = useState(null); // { sale, received, change }
@@ -52,6 +63,8 @@ function PosPage({ user, onBack }) {
 
   const searchRef = useRef(null);
   const checkoutRef = useRef(null);
+  const scanRef = useRef(null);
+  const scanBuffer = useRef({ code: "", last: 0 });
 
   const showToast = useCallback((message, type = "info") => setToast({ message, type }), []);
   const closeToast = useCallback(() => setToast(null), []);
@@ -65,14 +78,16 @@ function PosPage({ user, onBack }) {
         api.get("/service-categories").catch(() => ({ data: [] })),
         api.get("/customers/all").catch(() => ({ data: [] })),
         api.get("/organization/settings").catch(() => ({ data: {} })),
+        api.get("/cash-register/today").catch(() => ({ data: {} })),
       ])
-        .then(([servicesRes, productsRes, coiffeursRes, categoriesRes, customersRes, orgRes]) => {
+        .then(([servicesRes, productsRes, coiffeursRes, categoriesRes, customersRes, orgRes, registerRes]) => {
           setServices(modules.coiffure ? servicesRes.data : []);
           setProducts(productsRes.data.filter((p) => (p.source === "gaming" ? modules.gaming : modules.stock)));
           setCoiffeurs(coiffeursRes.data);
           setCategoryLabels(Object.fromEntries((categoriesRes.data || []).map((c) => [c.slug, c.label])));
           setCustomers(customersRes.data || []);
           setOrganization(orgRes.data.organization || null);
+          setRegister(registerRes.data.register || null);
         })
         .catch((e) => setError("Erreur chargement données: " + (e.response?.data?.message || e.message)))
         .finally(() => setDataLoading(false)),
@@ -113,6 +128,7 @@ function PosPage({ user, onBack }) {
         price: parseFloat(p.sale_price) || 0,
         category: "products",
         stock: parseFloat(p.quantity) || 0,
+        barcode: p.barcode || null,
       });
     });
     return items;
@@ -191,12 +207,27 @@ function PosPage({ user, onBack }) {
   const canPayOnCredit = !!selectedCustomer && parseFloat(selectedCustomer.credit_limit) > 0;
   const creditExceeded = payOnCredit && total > availableCredit;
 
-  const isCash = paymentMethod === "cash" && !payOnCredit;
+  // Paiement mixte : carte et mobile saisis, le reste est dû en espèces
+  const isMixed = paymentMethod === "mixed" && !payOnCredit;
+  const cardValue = isMixed ? Math.max(0, parseFloat(cardPart) || 0) : 0;
+  const mobileValue = isMixed ? Math.max(0, parseFloat(mobilePart) || 0) : 0;
+  const mixedOver = isMixed && round2(cardValue + mobileValue) > total;
+  const cashDue = payOnCredit
+    ? 0
+    : paymentMethod === "cash"
+      ? total
+      : isMixed
+        ? Math.max(0, round2(total - cardValue - mobileValue))
+        : 0;
+
+  const isCash = !payOnCredit && (paymentMethod === "cash" || (isMixed && cashDue > 0));
   const receivedValue = parseFloat(received);
   const hasReceived = received !== "" && !Number.isNaN(receivedValue);
-  const change = isCash && hasReceived ? round2(receivedValue - total) : 0;
-  const insufficientCash = isCash && hasReceived && receivedValue < total;
-  const checkoutDisabled = submitting || itemCount === 0 || creditExceeded || insufficientCash;
+  const change = isCash && hasReceived ? round2(receivedValue - cashDue) : 0;
+  const insufficientCash = isCash && hasReceived && receivedValue < cashDue;
+  const registerClosed = !!register && !register.is_open;
+  const checkoutDisabled =
+    submitting || itemCount === 0 || creditExceeded || insufficientCash || mixedOver || registerClosed;
 
   const resetSale = () => {
     setCart({});
@@ -206,6 +237,8 @@ function PosPage({ user, onBack }) {
     setDiscount("");
     setPaymentMethod("cash");
     setReceived("");
+    setCardPart("");
+    setMobilePart("");
     setSearch("");
     setError("");
   };
@@ -224,7 +257,9 @@ function PosPage({ user, onBack }) {
   // ===== Encaissement =====
   const handleCheckout = async () => {
     if (checkoutDisabled) {
-      if (itemCount === 0) setError("Le panier est vide.");
+      if (registerClosed) setError("La caisse du jour est clôturée : aucune vente n'est possible.");
+      else if (itemCount === 0) setError("Le panier est vide.");
+      else if (mixedOver) setError("Les montants carte + mobile dépassent le total.");
       else if (insufficientCash) setError("Montant reçu insuffisant.");
       else if (creditExceeded) setError(`Crédit insuffisant pour ce client. Disponible : ${fmt(availableCredit)}.`);
       return;
@@ -243,20 +278,27 @@ function PosPage({ user, onBack }) {
         paid_on_credit: payOnCredit,
         discount: discountValue,
         payment_method: paymentMethod,
+        payments: isMixed
+          ? [
+              { method: "cash", amount: cashDue },
+              { method: "card", amount: cardValue },
+              { method: "mobile", amount: mobileValue },
+            ].filter((p) => p.amount > 0)
+          : null,
         services: cartLines.filter((l) => l.kind === "service").map((l) => ({ service_id: l.id, quantity: l.qty })),
         products: cartLines.filter((l) => l.kind === "product").map((l) => ({ stock_product_id: l.id, quantity: l.qty })),
       };
       const res = await api.post("/sales", payload);
       const sale = res.data.sale;
-      // Le total serveur fait foi pour le rendu de monnaie.
-      const saleTotal = parseFloat(sale.total) || 0;
-      const cashGiven = isCash ? (hasReceived ? receivedValue : saleTotal) : null;
+      // La part espèces enregistrée par le serveur fait foi pour le rendu de monnaie.
+      const cashPart = parseFloat(sale.paid_cash) || 0;
+      const cashGiven = cashPart > 0 ? (hasReceived ? receivedValue : cashPart) : null;
       setCompleted({
         sale,
         received: cashGiven,
-        change: cashGiven !== null ? round2(cashGiven - saleTotal) : null,
+        change: cashGiven !== null ? round2(cashGiven - cashPart) : null,
       });
-      showToast("Vente enregistrée : " + fmt(saleTotal), "success");
+      showToast("Vente enregistrée : " + fmt(parseFloat(sale.total) || 0), "success");
     } catch (e) {
       setError("Erreur: " + (e.response?.data?.message || e.message));
     } finally {
@@ -264,14 +306,49 @@ function PosPage({ user, onBack }) {
     }
   };
 
+  // ===== Codes-barres =====
+  const findByBarcode = (code) => {
+    const wanted = code.trim();
+    return wanted ? catalog.find((i) => i.barcode && i.barcode === wanted) || null : null;
+  };
+
+  const handleScan = (code) => {
+    const item = findByBarcode(code);
+    if (!item) {
+      setError(`Code-barres inconnu : ${code}`);
+      return;
+    }
+    if (!canAdd(item, cart[item.key] || 0)) {
+      setError(`Stock insuffisant pour ${item.name}.`);
+      return;
+    }
+    addItem(item);
+  };
+
   useEffect(() => {
     checkoutRef.current = handleCheckout;
+    scanRef.current = handleScan;
   });
 
-  // ===== Raccourcis clavier =====
+  // ===== Raccourcis clavier + lecteur hors champ de saisie =====
   useEffect(() => {
+    const isEditable = (el) => el && (el.tagName === "INPUT" || el.tagName === "TEXTAREA" || el.tagName === "SELECT" || el.isContentEditable);
     const onKeyDown = (event) => {
       if (completed) return;
+      if (!isEditable(event.target) && !event.ctrlKey && !event.altKey && !event.metaKey) {
+        const buf = scanBuffer.current;
+        const t = Date.now();
+        if (event.key === "Enter" && buf.code.length >= 3 && t - buf.last < SCAN_MAX_GAP_MS * 3) {
+          event.preventDefault();
+          scanRef.current?.(buf.code);
+          buf.code = "";
+          return;
+        }
+        if (event.key.length === 1) {
+          buf.code = t - buf.last > SCAN_MAX_GAP_MS ? event.key : buf.code + event.key;
+          buf.last = t;
+        }
+      }
       if (event.key === "F2") {
         event.preventDefault();
         searchRef.current?.focus();
@@ -289,9 +366,18 @@ function PosPage({ user, onBack }) {
 
   const onSearchKeyDown = (event) => {
     if (event.key !== "Enter") return;
+    if (findByBarcode(search)) {
+      handleScan(search);
+      setSearch("");
+      return;
+    }
     const available = visibleItems.filter((i) => canAdd(i, cart[i.key] || 0));
     if (available.length === 1) {
       addItem(available[0]);
+      setSearch("");
+    } else if (visibleItems.length === 0 && /^\d{6,}$/.test(search.trim())) {
+      // Ressemble à un code-barres scanné mais n'existe pas
+      setError(`Code-barres inconnu : ${search.trim()}`);
       setSearch("");
     }
   };
@@ -349,12 +435,27 @@ function PosPage({ user, onBack }) {
           <span style={styles.clock} className="pos-hide-sm">
             <Clock size={15} /> {now.toLocaleTimeString("fr-FR")}
           </span>
+          {register && (
+            <span
+              style={{ ...styles.registerChip, ...(registerClosed ? styles.registerClosed : styles.registerOpen) }}
+              title={registerClosed ? "Caisse clôturée" : `Fond de caisse : ${fmt(register.opening_balance)}`}
+            >
+              {registerClosed ? "Caisse clôturée" : "Caisse ouverte"}
+            </span>
+          )}
           <span style={styles.userName} className="pos-hide-sm">{user?.name}</span>
           <button onClick={toggleFullscreen} style={styles.iconBtn} aria-label="Plein écran" title="Plein écran">
             {isFullscreen ? <Minimize size={18} /> : <Maximize size={18} />}
           </button>
         </div>
       </header>
+
+      {registerClosed && (
+        <div style={styles.closedBanner}>
+          La caisse du jour a été clôturée{register.closed_by_name ? ` par ${register.closed_by_name}` : ""}
+          {register.closed_at ? ` à ${register.closed_at}` : ""}. Les ventes sont bloquées jusqu'à demain.
+        </div>
+      )}
 
       <div style={styles.body} className="pos-body">
         {/* ===== Catalogue ===== */}
@@ -539,11 +640,7 @@ function PosPage({ user, onBack }) {
 
             {!payOnCredit && (
               <div style={styles.methods}>
-                {[
-                  { id: "cash", label: "Espèces" },
-                  { id: "card", label: "Carte" },
-                  { id: "mobile", label: "Mobile" },
-                ].map((m) => (
+                {PAYMENT_METHODS.map((m) => (
                   <button
                     key={m.id}
                     onClick={() => setPaymentMethod(m.id)}
@@ -552,6 +649,41 @@ function PosPage({ user, onBack }) {
                     {m.label}
                   </button>
                 ))}
+              </div>
+            )}
+
+            {isMixed && (
+              <div style={styles.mixedBlock}>
+                <label style={styles.mixedField}>
+                  <span style={styles.smallLabel}>Carte</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={cardPart}
+                    onChange={(e) => setCardPart(e.target.value)}
+                    placeholder="0"
+                    style={styles.mixedInput}
+                  />
+                </label>
+                <label style={styles.mixedField}>
+                  <span style={styles.smallLabel}>Mobile</span>
+                  <input
+                    type="number"
+                    min="0"
+                    step="0.01"
+                    value={mobilePart}
+                    onChange={(e) => setMobilePart(e.target.value)}
+                    placeholder="0"
+                    style={styles.mixedInput}
+                  />
+                </label>
+                <div style={styles.mixedField}>
+                  <span style={styles.smallLabel}>Espèces</span>
+                  <span style={{ ...styles.mixedCash, color: mixedOver ? "#b91c1c" : INK }}>
+                    {mixedOver ? "Trop" : fmt(cashDue)}
+                  </span>
+                </div>
               </div>
             )}
 
@@ -570,7 +702,7 @@ function PosPage({ user, onBack }) {
                   </div>
                 </div>
                 <div style={styles.quickRow}>
-                  <button onClick={() => setReceived(total.toFixed(2))} style={styles.quickBtn} disabled={total === 0}>
+                  <button onClick={() => setReceived(cashDue.toFixed(2))} style={styles.quickBtn} disabled={cashDue === 0}>
                     Exact
                   </button>
                   {QUICK_BILLS.map((b) => (
@@ -671,7 +803,15 @@ const styles = {
   totalsLine: { display: "flex", justifyContent: "space-between", alignItems: "center", fontSize: "13px", color: MUTED, padding: "2px 0" },
   discountInput: { width: "90px", padding: "5px 8px", border: `1px solid #d9d2c4`, borderRadius: "6px", fontSize: "13px", textAlign: "right", fontFamily: "inherit", color: INK, background: "#ffffff" },
   totalBig: { display: "flex", justifyContent: "space-between", fontSize: "24px", fontWeight: 800, paddingTop: "6px", marginTop: "4px", borderTop: `1px dashed #d9d2c4` },
-  methods: { display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: "8px", marginBottom: "10px" },
+  methods: { display: "grid", gridTemplateColumns: "repeat(4, 1fr)", gap: "6px", marginBottom: "10px" },
+  mixedBlock: { display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: "8px", marginBottom: "10px" },
+  mixedField: { display: "flex", flexDirection: "column", gap: "4px", minWidth: 0 },
+  mixedInput: { padding: "8px", border: `1px solid #d9d2c4`, borderRadius: "8px", fontSize: "14px", fontFamily: "inherit", color: INK, background: "#ffffff", minWidth: 0 },
+  mixedCash: { padding: "8px 0", fontSize: "15px", fontWeight: 800, fontVariantNumeric: "tabular-nums" },
+  registerChip: { padding: "4px 10px", borderRadius: "20px", fontSize: "12px", fontWeight: 700, whiteSpace: "nowrap" },
+  registerOpen: { background: "rgba(21,128,61,0.1)", color: "#15803d" },
+  registerClosed: { background: "rgba(185,28,28,0.1)", color: "#b91c1c" },
+  closedBanner: { padding: "10px 16px", background: "rgba(185,28,28,0.1)", borderBottom: "1px solid rgba(185,28,28,0.3)", color: "#b91c1c", fontSize: "13.5px", fontWeight: 600, flexShrink: 0 },
   method: { padding: "10px", background: "#f7f5f2", border: `1px solid ${BORDER}`, borderRadius: "10px", fontSize: "13.5px", fontWeight: 700, color: MUTED, cursor: "pointer" },
   methodActive: { background: "rgba(201,162,75,0.15)", borderColor: GOLD, color: GOLD_DARK },
   cashBlock: { marginBottom: "10px" },
