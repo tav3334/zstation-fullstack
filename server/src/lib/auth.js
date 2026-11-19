@@ -29,7 +29,7 @@ export async function passwordHashOf(userId) {
 export async function createToken(userId, name = 'auth-token') {
   const secret = crypto.randomBytes(30).toString('base64url').slice(0, 40);
   const row = await prisma.personalAccessToken.create({
-    data: { tokenable_type: USER_TYPE, tokenable_id: userId, name, token: sha256(secret), abilities: '["*"]' },
+    data: { tokenable_type: USER_TYPE, tokenable_id: userId, name, token: sha256(secret), abilities: '["*"]', expires_at: new Date(Date.now() + 12 * 60 * 60 * 1000) },
   });
   return `${row.id}|${secret}`;
 }
@@ -71,7 +71,7 @@ export async function authenticate(req, res, next) {
   if (!bearer) return res.status(401).json({ message: 'Unauthenticated.' });
 
   const token = await findToken(bearer);
-  if (!token || token.tokenable_type !== USER_TYPE || (token.expires_at && token.expires_at < new Date())) {
+  if (!token || token.tokenable_type !== USER_TYPE || (token.expires_at && token.expires_at <= new Date())) {
     return res.status(401).json({ message: 'Unauthenticated.' });
   }
 

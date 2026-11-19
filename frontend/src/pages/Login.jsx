@@ -9,12 +9,17 @@ function Login({ onLogin, onBack }) {
   const [password, setPassword] = useState("");
   const [showPassword, setShowPassword] = useState(false);
   const [loading, setLoading] = useState(false);
-  const [error, setError] = useState("");
+  const [error, setError] = useState(() =>
+    new URLSearchParams(window.location.search).get('reason') === 'session-expired'
+      ? 'Votre session a expiré. Veuillez vous reconnecter.'
+      : ''
+  );
   const { theme, toggleTheme, isDark } = useTheme();
 
   const handleSubmit = async (e) => {
     e.preventDefault();
     e.stopPropagation();
+    if (loading) return;
     setError("");
     setLoading(true);
     try {
@@ -22,7 +27,7 @@ function Login({ onLogin, onBack }) {
       localStorage.setItem("token", res.data.token);
       localStorage.setItem("user", JSON.stringify(res.data.user));
       api.defaults.headers.common["Authorization"] = `Bearer ${res.data.token}`;
-      onLogin(res.data.user);
+      await onLogin(res.data.user);
     } catch (err) {
       const errorMessage =
         err.response?.data?.message ||

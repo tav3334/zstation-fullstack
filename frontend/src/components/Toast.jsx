@@ -13,7 +13,7 @@ function Toast({ message, type = "info", onClose, duration = 3000 }) {
       position: "fixed",
       top: "24px",
       right: "24px",
-      minWidth: "320px",
+      width: "calc(100vw - 48px)",
       maxWidth: "500px",
       padding: "16px 20px",
       borderRadius: "12px",
@@ -80,10 +80,12 @@ function Toast({ message, type = "info", onClose, duration = 3000 }) {
           }
         `}
       </style>
-      <div style={styles}>
+      <div style={styles} role={type === "error" ? "alert" : "status"} aria-atomic="true">
         <span style={{ fontSize: "20px" }}>{styles.icon}</span>
         <span style={{ flex: 1 }}>{message}</span>
         <button
+          type="button"
+          aria-label="Fermer la notification"
           onClick={onClose}
           style={{
             background: "rgba(255, 255, 255, 0.2)",
