@@ -6,6 +6,7 @@ import Toast from "../components/Toast";
 import PosTicketsPanel from "../components/PosTicketsPanel";
 import SwitchCashierModal from "../components/SwitchCashierModal";
 import { permissionsOf } from "../utils/permissions";
+import useConfirm from "../hooks/useConfirm";
 
 // Écran de caisse plein écran (POS) : catalogue à gauche, panier + encaissement à droite.
 // Raccourcis : F2 recherche, F9 encaisser, Échap vider la recherche.
@@ -68,6 +69,8 @@ function PosPage({ user, onBack }) {
   const [showSwitch, setShowSwitch] = useState(false);
   const [salesVersion, setSalesVersion] = useState(0); // recharge « Mes ventes » après chaque vente
 
+  const { confirm, ConfirmModal } = useConfirm();
+  const checkoutInFlight = useRef(false);
   const searchRef = useRef(null);
   const checkoutRef = useRef(null);
   const scanRef = useRef(null);
@@ -238,7 +241,7 @@ function PosPage({ user, onBack }) {
   const insufficientCash = isCash && hasReceived && receivedValue < cashDue;
   const registerClosed = !!register && !register.is_open;
   const checkoutDisabled =
-    submitting || itemCount === 0 || creditExceeded || insufficientCash || mixedOver || registerClosed || discountTooHigh;
+    submitting || completed !== null || dataLoading || itemCount === 0 || creditExceeded || insufficientCash || mixedOver || registerClosed || discountTooHigh;
 
   const resetSale = () => {
     setCart({});
@@ -254,6 +257,33 @@ function PosPage({ user, onBack }) {
     setError("");
   };
 
+  // Warn only while an unsaved basket or a payment request is present.
+  useEffect(() => {
+    if ((!itemCount || completed) && !submitting) return;
+    const warnBeforeLeaving = (event) => {
+      event.preventDefault();
+      event.returnValue = '';
+    };
+    window.addEventListener('beforeunload', warnBeforeLeaving);
+    return () => window.removeEventListener('beforeunload', warnBeforeLeaving);
+  }, [itemCount, completed, submitting]);
+
+  const leavePos = async () => {
+    if (checkoutInFlight.current) return;
+    if (itemCount > 0 && !completed && !(await confirm(
+      'Quitter la caisse ? Le panier en cours sera perdu.',
+      { confirmLabel: 'Quitter la caisse', cancelLabel: 'Garder le panier' }
+    ))) return;
+    if (!checkoutInFlight.current) onBack();
+  };
+
+  const clearCart = async () => {
+    if (checkoutInFlight.current) return;
+    if (!(await confirm('Vider le panier en cours ?', {
+      confirmLabel: 'Vider le panier', cancelLabel: 'Garder le panier'
+    }))) return;
+    if (!checkoutInFlight.current) resetSale();
+  };
   // ===== Pavé numérique =====
   const pressKey = (k) => {
     setReceived((prev) => {
@@ -267,6 +297,11 @@ function PosPage({ user, onBack }) {
 
   // ===== Encaissement =====
   const handleCheckout = async () => {
+    if (checkoutInFlight.current || completed || dataLoading) return;
+    if (!navigator.onLine) {
+      setError('Connexion internet nécessaire pour encaisser. Votre panier est conservé.');
+      return;
+    }
     if (checkoutDisabled) {
       if (registerClosed) setError("La caisse du jour est clôturée : aucune vente n'est possible.");
       else if (itemCount === 0) setError("Le panier est vide.");
@@ -282,6 +317,7 @@ function PosPage({ user, onBack }) {
     }
 
     setError("");
+    checkoutInFlight.current = true;
     setSubmitting(true);
     try {
       const payload = {
@@ -314,6 +350,7 @@ function PosPage({ user, onBack }) {
     } catch (e) {
       setError("Erreur: " + (e.response?.data?.message || e.message));
     } finally {
+      checkoutInFlight.current = false;
       setSubmitting(false);
     }
   };
@@ -421,6 +458,7 @@ function PosPage({ user, onBack }) {
   // ===== Rendu =====
   return (
     <div style={styles.page} className="pos-page">
+      {ConfirmModal}
       {toast && <Toast message={toast.message} type={toast.type} onClose={closeToast} />}
 
       {showTickets && <PosTicketsPanel onClose={() => setShowTickets(false)} refreshKey={salesVersion} />}
@@ -439,7 +477,7 @@ function PosPage({ user, onBack }) {
 
       {/* ===== Barre du haut ===== */}
       <header style={styles.topBar}>
-        <button onClick={onBack} style={styles.backBtn}>
+        <button onClick={leavePos} disabled={submitting} style={styles.backBtn}>
           <ArrowLeft size={18} /> <span className="pos-hide-sm">Retour</span>
         </button>
         <h1 style={styles.title}>Caisse</h1>
@@ -560,7 +598,7 @@ function PosPage({ user, onBack }) {
             <ShoppingCart size={16} /> Panier
             {itemCount > 0 && <span style={styles.cartCount}>{itemCount}</span>}
             {itemCount > 0 && (
-              <button onClick={resetSale} style={styles.clearCart}>
+              <button onClick={clearCart} disabled={submitting} style={styles.clearCart}>
                 Vider
               </button>
             )}
@@ -745,7 +783,7 @@ function PosPage({ user, onBack }) {
               </div>
             )}
 
-            {error && <div style={styles.errorBox}>{error}</div>}
+            {error && <div style={styles.errorBox} role="alert">{error}</div>}
 
             <button
               onClick={handleCheckout}
